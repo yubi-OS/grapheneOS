@@ -27,7 +27,16 @@ if [ ! -d "/mnt/extended" ]; then
   echo "ERROR: /mnt/extended does not exist on this host!" >&2
   exit 1
 fi
-mkdir -p "$EXTENDED_ROOT"/{bin,.ssh,manifest-check,workspace,out,ccache,vendor_cache,kernels,vanadium,sdk,releases}
+mkdir -p "$EXTENDED_ROOT"/{bin,x86_64-shim,.ssh,manifest-check,workspace,out,ccache,vendor_cache,kernels,vanadium,sdk,releases}
+cat > "$EXTENDED_ROOT/x86_64-shim/uname" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-m" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "-i" ]; then
+  echo x86_64
+else
+  /usr/bin/uname "$@" | sed "s/aarch64/x86_64/g"
+fi
+EOF
+chmod 0755 "$EXTENDED_ROOT/x86_64-shim/uname"
 {
   df -h / /mnt/extended "$GITHUB_WORKSPACE"
   df -B1G /mnt/extended
@@ -37,7 +46,7 @@ mkdir -p "$EXTENDED_ROOT"/{bin,.ssh,manifest-check,workspace,out,ccache,vendor_c
 echo "=== [4/6] GrapheneOS Host Prerequisite Binary Audit ==="
 MISSING=0
 {
-  for cmd in git git-lfs python3 gpg ssh-keygen openssl rsync zip unzip diff hostname fc-list bc bison flex gperf lz4 zstd mke2fs mksquashfs cpio sha256sum sha512sum setarch nice ionice; do
+  for cmd in git python3 gpg ssh-keygen openssl rsync zip unzip diff hostname fc-list bc bison flex gperf zstd mke2fs mksquashfs cpio sha256sum sha512sum nice ionice; do
     if command -v "$cmd" >/dev/null 2>&1; then
       printf "OK      %-16s -> %s\n" "$cmd" "$(command -v "$cmd")"
     else
@@ -45,25 +54,26 @@ MISSING=0
       MISSING=$((MISSING + 1))
     fi
   done
-  for opt_cmd in repo node yarn corepack qemu-x86_64-static podman docker pkcs11-tool fido2-assert; do
+  for opt_cmd in repo node yarn corepack qemu-x86_64 git-lfs lz4 podman docker pkcs11-tool fido2-assert; do
     if command -v "$opt_cmd" >/dev/null 2>&1; then
       printf "OPT_OK  %-16s -> %s\n" "$opt_cmd" "$(command -v "$opt_cmd")"
     else
-      printf "OPT_ABS %-16s (bootstrapped on /mnt/extended or optional)\n" "$opt_cmd"
+      printf "OPT_ABS %-16s (bootstrapped on /mnt/extended or host apt)\n" "$opt_cmd"
     fi
   done
 } | tee "$EVIDENCE_DIR/prereq-binaries.txt"
 
-echo "=== [5/6] ARM64-to-x86_64 Emulation & binfmt_misc Inspection ==="
+echo "=== [5/6] ARM64-to-x86_64 Emulation & binfmt_misc Verification ==="
 {
-  echo "Host arch: $(uname -m)"
-  echo "setarch x86_64 arch: $(setarch x86_64 uname -m || echo setarch_failed)"
-  if [ -f /proc/sys/fs/binfmt_misc/qemu-x86_64 ]; then
-    echo "--- /proc/sys/fs/binfmt_misc/qemu-x86_64 ---"
-    cat /proc/sys/fs/binfmt_misc/qemu-x86_64
-  else
-    echo "NOTE: /proc/sys/fs/binfmt_misc/qemu-x86_64 not registered yet (requires qemu-user-static + flags: F for AOSP x86_64 prebuilts inside nsjail)."
-  fi
+  echo "Native host arch: $(/usr/bin/uname -m)"
+  echo "Shimmed AOSP host arch: $(PATH="$EXTENDED_ROOT/x86_64-shim:$PATH" uname -m)"
+  test "$(PATH="$EXTENDED_ROOT/x86_64-shim:$PATH" uname -m)" = "x86_64"
+  test -f /proc/sys/fs/binfmt_misc/qemu-x86_64
+  echo "--- /proc/sys/fs/binfmt_misc/qemu-x86_64 ---"
+  cat /proc/sys/fs/binfmt_misc/qemu-x86_64
+  grep -q 'enabled' /proc/sys/fs/binfmt_misc/qemu-x86_64
+  grep -E -q 'flags:.*F' /proc/sys/fs/binfmt_misc/qemu-x86_64
+  echo "PASS: binfmt_misc qemu-x86_64 is enabled with F (fix-binary) flag for Soong nsjail sandboxes."
 } | tee "$EVIDENCE_DIR/binfmt-status.txt"
 
 echo "=== [6/6] PINNED.md Supply-Chain Integrity Check ==="
