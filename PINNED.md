@@ -37,6 +37,10 @@ Every downloaded workflow artifact is verified with both `sha256sum --check --st
 | `https://github.com/docker/buildx/releases/download/v0.39.0/buildx-v0.39.0.linux-arm64` | `linux/arm64` | `-` | `810c87058af0abb1205366d85ac47c3b1111676f7ae411fba19d3fe49a13a0695fe0d8bb03cdbd097132507eec19c7aecf4189e3ca30cab0e4a2a3b92ce8ad2b` `# v0.39.0` |
 | `https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-arm64` | `linux/arm64` | `ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2` `# v3.1.4` | `dcf1a8745b03c9c7cf915ebeb34f287a5ade8bd975699ff7c221440ce8fabbacec98cc1a1728444c80d63c3372029d33973863ca07b2634e4c196e178a2d7f86` `# v3.1.4` |
 
+| `https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-arm64-v3.7.1.tar.gz` | `linux/arm64` | `73a9c90eeb4312133a63c3eaee0c38c019ea7bfa0953d174809d25b18588dd8d` `# v3.7.1` | `858ff2c5bec3b278acba3b6fe19b229d7786c723b177408a111953c367c2f93693108bdd445aa6702d88e31ad857adf91284afb75ed5be5bec1a23472d19de55` `# v3.7.1` |
+| `https://dl.google.com/dl/android/aosp/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip` | `stallion (Pixel 10a)` | `45cdadb1e34b4dd4462069a36c131ebe3a05d9d4be5f567f9cd61b7c69d5dbe8` `# CP4A.261105.040.A1` | `verified by adevtool build-index-main.yml` `# CP4A.261105.040.A1` |
+| `https://dl.google.com/dl/android/aosp/stallion-ota-cp4a.261105.040.a1-91604ff1.zip` | `stallion (Pixel 10a)` | `91604ff11cdc0f909e32c369cbd4448ce00d5b0a7fbc17859e6a779ab2808693` `# CP4A.261105.040.A1` | `verified by adevtool build-index-main.yml` `# CP4A.261105.040.A1` |
+
 ## GrapheneOS & AOSP Source Refs
 
 Workflows verify the annotated SSH-signed tag `2026111800` (`e5681d7438f52a75819d1f34f8d738fcaa54654c`) against `allowed_signers` and assert that the peeled manifest commit is `c2f57432b89dda12ec40f07768d3c3a75bde9634`. Because the `2026111800` release manifest pins all 1,057 projects (148 GrapheneOS forks + 909 AOSP projects) by exact 40-character commit SHA, verifying the manifest tag transitively authenticates the entire OS tree.
