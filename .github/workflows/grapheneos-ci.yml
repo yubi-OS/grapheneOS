@@ -1,0 +1,202 @@
+name: GrapheneOS Build & Verification CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Pipeline stage to execute on ubuntu (/mnt/extended)"
+        required: true
+        default: "preflight-and-manifest"
+        type: choice
+        options:
+          - preflight-and-manifest
+          - sync
+          - adevtool
+          - prebuilts
+          - build
+          - release-sign
+          - all
+      target:
+        description: "GrapheneOS target device codename"
+        required: true
+        default: "sdk_phone64_x86_64"
+        type: choice
+        options:
+          - sdk_phone64_x86_64
+          - sdk_phone64_arm64
+          - tokay
+          - caiman
+          - komodo
+          - comet
+          - tegu
+          - frankel
+          - blazer
+          - mustang
+          - rango
+          - stallion
+          - husky
+          - shiba
+          - akita
+      variant:
+        description: "Build variant"
+        required: true
+        default: "userdebug"
+        type: choice
+        options:
+          - user
+          - userdebug
+          - eng
+      manifest_tag:
+        description: "Pinned GrapheneOS release tag from PINNED.md"
+        required: true
+        default: "2026111800"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grapheneos-ubuntu-high-mem
+  cancel-in-progress: false
+
+jobs:
+  grapheneos-pipeline:
+    runs-on: [self-hosted, Linux, ARM64, HIGH-MEM]
+    timeout-minutes: 720
+    env:
+      EXTENDED_ROOT: /mnt/extended/grapheneos
+      MANIFEST_TAG: ${{ inputs.manifest_tag || '2026111800' }}
+      TARGET_DEVICE: ${{ inputs.target || 'sdk_phone64_x86_64' }}
+      BUILD_VARIANT: ${{ inputs.variant || 'userdebug' }}
+      STAGE: ${{ inputs.stage || 'preflight-and-manifest' }}
+      REPO_REV: v2.74
+    steps:
+      - name: Checkout yubi-OS/grapheneOS
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Stage 1 - Host Load Gate, /mnt/extended Layout & Prerequisite Audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          bash scripts/check-host-prereqs.sh
+
+      - name: Stage 2 - Bootstrap repo & Verify GrapheneOS SSH Manifest Tag Signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/bootstrap-repo-and-verify.sh
+
+      - name: Validate Updater Override & YubiKey AVB Signer Helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          TMP_XML=$(mktemp /dev/shm/updater-config.XXXXXXXXXX.xml)
+          trap 'rm -f "$TMP_XML"' EXIT
+          cat > "$TMP_XML" <<'EOF'
+          <resources>
+              <string name="url" translatable="false">https://releases.grapheneos.org/</string>
+              <string name="channel_default" translatable="false">stable</string>
+          </resources>
+          EOF
+          bash scripts/patch-updater-url.sh "$TMP_XML" | tee evidence/helper-selftest.txt
+          bash scripts/yubikey-avb-signer.sh --self-test | tee -a evidence/helper-selftest.txt
+
+      - name: Stage 3 - Throttled Resumable repo sync on /mnt/extended
+        if: inputs.stage == 'sync' || inputs.stage == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          cd "$EXTENDED_ROOT/workspace"
+          nice -n 19 ionice -c3 repo init \
+            -u https://github.com/GrapheneOS/platform_manifest.git \
+            -b "refs/tags/${MANIFEST_TAG}" \
+            --repo-rev="${REPO_REV}"
+          git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
+          git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
+          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags -j4 --fail-fast 2>&1 | tee "$GITHUB_WORKSPACE/evidence/repo-sync.log"
+
+      - name: Stage 4 - Bootstrap Node 24 LTS & Run adevtool Vendor Extraction
+        if: (inputs.stage == 'adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VER="v24.22.3"
+          NODE_TAR="node-${NODE_VER}-linux-arm64.tar.xz"
+          NODE_SHA256="6e51a2ada00f0011cc266f65d98922b403d7ad88f809ca2aa615a5fe1ce6e86c"
+          NODE_SHA512="69acc8f30bb09dcc2882ea495bc1b01f74471b17d3aebbe796fa583618c89fb193218e6f7b07123ef60a9308a64c0963641fb85636b2235e1b8dae2b9d3c3ac8"
+          if [ ! -x "$EXTENDED_ROOT/bin/node-${NODE_VER}/bin/node" ]; then
+            curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${NODE_TAR}" -o "$EXTENDED_ROOT/bin/${NODE_TAR}"
+            echo "${NODE_SHA256}  $EXTENDED_ROOT/bin/${NODE_TAR}" | sha256sum --check --strict
+            echo "${NODE_SHA512}  $EXTENDED_ROOT/bin/${NODE_TAR}" | sha512sum --check --strict
+            mkdir -p "$EXTENDED_ROOT/bin/node-${NODE_VER}"
+            tar -xJf "$EXTENDED_ROOT/bin/${NODE_TAR}" --strip-components=1 -C "$EXTENDED_ROOT/bin/node-${NODE_VER}"
+            rm -f "$EXTENDED_ROOT/bin/${NODE_TAR}"
+          fi
+          export PATH="$EXTENDED_ROOT/bin/node-${NODE_VER}/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin"
+          corepack enable --install-directory "$EXTENDED_ROOT/bin/node-${NODE_VER}/bin"
+          cd "$EXTENDED_ROOT/workspace"
+          nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
+          export ADEVTOOL_CACHE_DIR="$EXTENDED_ROOT/vendor_cache"
+          setarch x86_64 bash -c "source build/envsetup.sh && nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d ${TARGET_DEVICE}"
+
+      - name: Stage 5 - Throttled OS Build on /mnt/extended
+        if: inputs.stage == 'build' || inputs.stage == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          export OUT_DIR_COMMON_BASE="$EXTENDED_ROOT/out"
+          export CCACHE_DIR="$EXTENDED_ROOT/ccache"
+          cd "$EXTENDED_ROOT/workspace"
+          bash "$GITHUB_WORKSPACE/scripts/patch-updater-url.sh" "$EXTENDED_ROOT/workspace/packages/apps/Updater/res/values/config.xml"
+          setarch x86_64 bash -c '
+            set -euo pipefail
+            source build/envsetup.sh
+            lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
+            if [ "${TARGET_DEVICE}" = "sdk_phone64_x86_64" ] || [ "${TARGET_DEVICE}" = "sdk_phone64_arm64" ]; then
+              nice -n 19 ionice -c3 m -j8 -l10
+            else
+              export OFFICIAL_BUILD=true
+              case "${TARGET_DEVICE}" in
+                oriole|raven|bluejay)
+                  nice -n 19 ionice -c3 m -j8 -l10 vendorbootimage target-files-package otatools-package
+                  ;;
+                *)
+                  nice -n 19 ionice -c3 m -j8 -l10 vendorbootimage vendorkernelbootimage target-files-package otatools-package
+                  ;;
+              esac
+            fi
+          '
+
+      - name: Stage 6 - Memory-Safe Release Signing (/dev/shm tmpfs)
+        if: inputs.stage == 'release-sign' || inputs.stage == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+            echo "ERROR: Active swap detected in /proc/swaps. Disable swap before decrypting release signing keys into /dev/shm!" >&2
+            exit 1
+          fi
+          cd "$EXTENDED_ROOT/workspace"
+          setarch x86_64 bash -c '
+            set -euo pipefail
+            source build/envsetup.sh
+            lunch "${TARGET_DEVICE}-cur-user"
+            script/finalize.sh
+            BUILD_NUM=$(cat "$OUT_DIR_COMMON_BASE/workspace/target/product/${TARGET_DEVICE}/build_number.txt")
+            script/generate-release.sh "${TARGET_DEVICE}" "${BUILD_NUM}"
+          '
+
+      - name: Upload CI Verification Evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: grapheneos-ci-evidence-${{ github.run_id }}
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: error
