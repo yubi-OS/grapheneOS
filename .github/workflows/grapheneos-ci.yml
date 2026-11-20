@@ -77,7 +77,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Stage 1 - Host Load Gate, /mnt/extended Layout & Prerequisite Audit
+      - name: Stage 1 - Host Load Gate, /mnt/extended Mountpoint & Prerequisite Audit
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +106,7 @@ jobs:
           bash scripts/patch-updater-url.sh "$TMP_XML" | tee evidence/helper-selftest.txt
           bash scripts/yubikey-avb-signer.sh --self-test | tee -a evidence/helper-selftest.txt
 
-      - name: Stage 3 - Throttled Resumable repo sync on /mnt/extended
+      - name: Stage 3 - Single-Stream Throttled Resumable repo sync on /mnt/extended (-j1, pack.threads=1)
         if: inputs.stage == 'sync' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all'
         shell: bash
         run: |
@@ -115,6 +115,13 @@ jobs:
           git config --global user.name "yubi-OS CI"
           git config --global user.email "ci@yubios.org"
           git config --global color.ui false
+          git config --global pack.threads 1
+          git config --global pack.windowMemory "64m"
+          git config --global core.preloadIndex false
+          if [ -d "$EXTENDED_ROOT/workspace/.repo" ]; then
+            echo "Cleaning any stale git lockfiles or partial temp packs from interrupted sync..."
+            find "$EXTENDED_ROOT/workspace/.repo" \( -name "*.lock" -o -name "tmp_pack_*" -o -name "tmp_obj_*" \) -delete 2>/dev/null || true
+          fi
           cd "$EXTENDED_ROOT/workspace"
           nice -n 19 ionice -c3 repo init \
             -u https://github.com/GrapheneOS/platform_manifest.git \
@@ -122,7 +129,7 @@ jobs:
             --repo-rev="${REPO_REV}" < /dev/null
           git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
           git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
-          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags -j4 --fail-fast
+          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags -j1 --jobs-network=1 --jobs-checkout=1 --fail-fast
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
       - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
@@ -133,6 +140,7 @@ jobs:
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           export IMAGE_DOWNLOAD_DIR="$EXTENDED_ROOT/vendor_cache"
+          export UV_THREADPOOL_SIZE="2"
           mkdir -p "$HOME/.adevtool-cache"
           ln -sfn "$EXTENDED_ROOT/vendor_cache" "$HOME/.adevtool-cache/images"
           cd "$EXTENDED_ROOT/workspace"
@@ -154,15 +162,15 @@ jobs:
           source build/envsetup.sh
           lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
           if [ "${TARGET_DEVICE}" = "sdk_phone64_x86_64" ] || [ "${TARGET_DEVICE}" = "sdk_phone64_arm64" ]; then
-            nice -n 19 ionice -c3 m -j8 -l10
+            nice -n 19 ionice -c3 m -j4 -l6
           else
             export OFFICIAL_BUILD=true
             case "${TARGET_DEVICE}" in
               oriole|raven|bluejay)
-                nice -n 19 ionice -c3 m -j8 -l10 vendorbootimage target-files-package otatools-package
+                nice -n 19 ionice -c3 m -j4 -l6 vendorbootimage target-files-package otatools-package
                 ;;
               *)
-                nice -n 19 ionice -c3 m -j8 -l10 vendorbootimage vendorkernelbootimage target-files-package otatools-package
+                nice -n 19 ionice -c3 m -j4 -l6 vendorbootimage vendorkernelbootimage target-files-package otatools-package
                 ;;
             esac
           fi

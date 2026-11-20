@@ -5,12 +5,14 @@ EXTENDED_ROOT="${EXTENDED_ROOT:-/mnt/extended/grapheneos}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-evidence}"
 mkdir -p "$EVIDENCE_DIR"
 
-echo "=== [1/6] Host Load & Top CPU Processes Check (Mandatory Preflight) ==="
+echo "=== [1/6] Host Load, Uptime, dmesg & Top CPU Processes Check (Mandatory Preflight) ==="
 {
   echo "Timestamp: $(date -u +%FT%TZ)"
   echo "Uptime: $(uptime)"
   echo "--- Top 15 CPU Processes ---"
   ps -eo pid,user,pcpu,pmem,stat,comm,args --sort=-pcpu | head -n 16
+  echo "--- Recent kernel I/O check (dmesg tail) ---"
+  dmesg -T 2>/dev/null | tail -n 20 || true
 } | tee "$EVIDENCE_DIR/host-load.txt"
 
 echo "=== [2/6] System Architecture, Memory & Swap Inspection ==="
@@ -22,9 +24,10 @@ echo "=== [2/6] System Architecture, Memory & Swap Inspection ==="
   cat /proc/swaps || true
 } | tee "$EVIDENCE_DIR/host-system.txt"
 
-echo "=== [3/6] Storage & /mnt/extended Capacity Verification ==="
-if [ ! -d "/mnt/extended" ]; then
-  echo "ERROR: /mnt/extended does not exist on this host!" >&2
+echo "=== [3/6] Storage & /mnt/extended Mountpoint Verification ==="
+if ! mountpoint -q /mnt/extended; then
+  echo "ERROR: /mnt/extended is NOT mounted! Refusing to write to root (/) filesystem." >&2
+  df -h / /mnt/extended || true
   exit 1
 fi
 mkdir -p "$EXTENDED_ROOT"/{bin,x86_64-shim,.ssh,manifest-check,workspace,out,ccache,vendor_cache,kernels,vanadium,sdk,releases}
@@ -41,6 +44,7 @@ chmod 0755 "$EXTENDED_ROOT/x86_64-shim/uname"
   df -h / /mnt/extended "$GITHUB_WORKSPACE"
   df -B1G /mnt/extended
   stat -c "%A %U:%G %n" /mnt/extended "$EXTENDED_ROOT"
+  du -sh "$EXTENDED_ROOT/workspace/.repo" 2>/dev/null || true
 } | tee "$EVIDENCE_DIR/storage-layout.txt"
 
 echo "=== [4/6] GrapheneOS Host Prerequisite Binary Audit ==="
