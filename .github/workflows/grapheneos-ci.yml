@@ -119,17 +119,61 @@ jobs:
           git config --global pack.windowMemory "64m"
           git config --global core.preloadIndex false
           if [ -d "$EXTENDED_ROOT/workspace/.repo" ]; then
-            echo "Cleaning any stale git lockfiles or partial temp packs from interrupted sync..."
+            echo "Scanning .repo for stale locks or crash-corrupted refs (e.g. bad object refs/remotes/m/...)..."
             find "$EXTENDED_ROOT/workspace/.repo" \( -name "*.lock" -o -name "tmp_pack_*" -o -name "tmp_obj_*" \) -delete 2>/dev/null || true
+            python3 - "$EXTENDED_ROOT/workspace/.repo" <<'PYEOF'
+          import os, subprocess, shutil, sys
+          repo_dir = sys.argv[1]
+          fixed = 0
+          for root_sub in ["projects", "project-objects"]:
+              base = os.path.join(repo_dir, root_sub)
+              if not os.path.isdir(base):
+                  continue
+              for dirpath, dirnames, filenames in os.walk(base):
+                  if dirpath.endswith(".git"):
+                      dirnames[:] = []
+                      obj_dir = os.path.join(dirpath, "objects")
+                      if os.path.isdir(obj_dir):
+                          for o_root, _, o_files in os.walk(obj_dir):
+                              for f in o_files:
+                                  fp = os.path.join(o_root, f)
+                                  try:
+                                      if os.path.getsize(fp) == 0:
+                                          os.unlink(fp)
+                                          fixed += 1
+                                  except OSError:
+                                      pass
+                      r = subprocess.run(["git", "--git-dir", dirpath, "for-each-ref"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                      if r.returncode != 0 or "bad object" in r.stderr or "corrupt" in r.stderr:
+                          print(f"Repairing crash-corrupted git dir: {dirpath} -> {r.stderr.strip()}")
+                          for sub_ref in [("refs", "remotes", "m"), ("refs", "tags")]:
+                              p = os.path.join(dirpath, *sub_ref)
+                              if os.path.exists(p):
+                                  shutil.rmtree(p, ignore_errors=True)
+                          packed = os.path.join(dirpath, "packed-refs")
+                          if os.path.exists(packed):
+                              os.unlink(packed)
+                          r2 = subprocess.run(["git", "--git-dir", dirpath, "for-each-ref"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                          if r2.returncode != 0:
+                              print(f"Removing unrecoverable git dir for clean re-fetch: {dirpath}")
+                              shutil.rmtree(dirpath, ignore_errors=True)
+                          fixed += 1
+          print(f"Crash-recovery scan complete (repaired/cleaned {fixed} git dirs).")
+          PYEOF
           fi
           cd "$EXTENDED_ROOT/workspace"
           nice -n 19 ionice -c3 repo init \
             -u https://github.com/GrapheneOS/platform_manifest.git \
             -b "refs/tags/${MANIFEST_TAG}" \
             --repo-rev="${REPO_REV}" < /dev/null
+          if [ -x "$EXTENDED_ROOT/workspace/.repo/repo/repo" ]; then
+            cp -f "$EXTENDED_ROOT/workspace/.repo/repo/repo" "$EXTENDED_ROOT/bin/repo"
+            chmod 0755 "$EXTENDED_ROOT/bin/repo"
+          fi
           git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
           git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
-          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags -j1 --jobs-network=1 --jobs-checkout=1 --fail-fast
+          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags --force-sync --force-broken -j1 --jobs-network=1 --jobs-checkout=1 || \
+            nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags --force-sync -j1 --jobs-network=1 --jobs-checkout=1
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
       - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
