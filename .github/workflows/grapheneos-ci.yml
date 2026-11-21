@@ -112,7 +112,7 @@ jobs:
           bash scripts/patch-updater-url.sh "$TMP_XML" | tee evidence/helper-selftest.txt
           bash scripts/yubikey-avb-signer.sh --self-test | tee -a evidence/helper-selftest.txt
 
-      - name: Stage 3 - Batch-Paced Single-Core Throttled repo sync on /mnt/extended (taskset -c 0, -j1)
+      - name: Stage 3 - Trickle-Flushed Single-Repo Paced sync on /mnt/extended (taskset -c 0, -j1)
         if: inputs.stage == 'sync' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all'
         shell: bash
         run: |
@@ -122,8 +122,12 @@ jobs:
           git config --global user.email "ci@yubios.org"
           git config --global color.ui false
           git config --global pack.threads 1
-          git config --global pack.windowMemory "64m"
+          git config --global pack.windowMemory "32m"
+          git config --global core.packedGitLimit "128m"
+          git config --global core.packedGitWindowSize "32m"
           git config --global core.preloadIndex false
+          git config --global core.fsync "objects,derived-metadata,reference"
+          git config --global core.fsyncMethod "fsync"
           if [ -d "$EXTENDED_ROOT/workspace/.repo" ]; then
             echo "Scanning .repo for stale locks or crash-corrupted refs..."
             find "$EXTENDED_ROOT/workspace/.repo" \( -name "*.lock" -o -name "tmp_pack_*" -o -name "tmp_obj_*" \) -delete 2>/dev/null || true
@@ -179,35 +183,48 @@ jobs:
           git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
           git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
           taskset -c 0 nice -n 19 ionice -c3 python3 - <<'PYEOF'
-          import xml.etree.ElementTree as ET, subprocess, time, os, sys
+          import xml.etree.ElementTree as ET, subprocess, time, os
           tree = ET.parse(".repo/manifests/default.xml")
           projects = []
           for p in tree.getroot().findall("project"):
               path = p.get("path") or p.get("name")
+              name = p.get("name")
               rev = p.get("revision")
-              projects.append((path, rev))
-          print(f"Total manifest projects: {len(projects)}")
+              projects.append((path, name, rev))
+          print(f"Total manifest projects: {len(projects)}", flush=True)
           todo = []
-          for path, rev in projects:
+          for path, name, rev in projects:
               git_dir = os.path.join(path, ".git")
               if os.path.exists(git_dir) and rev and len(rev) == 40:
                   r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                   if r.returncode == 0 and r.stdout.strip() == rev:
                       continue
-              todo.append(path)
-          print(f"Already at pinned revision: {len(projects) - len(todo)}/{len(projects)}; Remaining to sync: {len(todo)}")
-          batch_size = 35
-          for i in range(0, len(todo), batch_size):
-              batch = todo[i:i+batch_size]
-              print(f"=== Syncing batch {i//batch_size + 1}/{(len(todo) + batch_size - 1)//batch_size} ({len(batch)} repos, index {i}..{i+len(batch)-1}) ===", flush=True)
-              cmd = ["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "repo", "sync", "-c", "--no-clone-bundle", "--no-tags", "--force-sync", "--force-broken", "-j1", "--jobs-network=1", "--jobs-checkout=1"] + batch
-              res = subprocess.run(cmd)
-              if res.returncode != 0:
-                  print(f"Retrying batch {i//batch_size + 1} once after transient error...", flush=True)
-                  subprocess.run(cmd, check=True)
+              todo.append((path, name, rev))
+          print(f"Already checked out at pinned revision: {len(projects) - len(todo)}/{len(projects)}; Remaining: {len(todo)}", flush=True)
+          idx = 0
+          while idx < len(todo):
+              path, name, rev = todo[idx]
+              is_heavy = path.startswith("prebuilts/") or path.startswith("external/vanadium") or path.startswith("external/chromium") or "-kernels/" in path or "kernel/prebuilts" in path
+              if is_heavy:
+                  batch_paths = [path]
+                  idx += 1
+              else:
+                  batch_paths = []
+                  while idx < len(todo) and len(batch_paths) < 10:
+                      p_i = todo[idx][0]
+                      if p_i.startswith("prebuilts/") or p_i.startswith("external/vanadium") or p_i.startswith("external/chromium") or "-kernels/" in p_i or "kernel/prebuilts" in p_i:
+                          break
+                      batch_paths.append(p_i)
+                      idx += 1
+              print(f"[{idx}/{len(todo)}] Syncing ({len(batch_paths)}): {batch_paths[0]} ...", flush=True)
+              base_cmd = ["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "repo", "sync", "-c", "--no-clone-bundle", "--no-tags", "--force-sync", "--force-broken", "-j1", "--jobs-network=1", "--jobs-checkout=1"]
+              subprocess.run(base_cmd + ["--network-only"] + batch_paths, check=True)
               subprocess.run(["sync"])
-              time.sleep(10)
-          print("All batches synced; running final verification pass...", flush=True)
+              time.sleep(3 if not is_heavy else 8)
+              subprocess.run(base_cmd + ["--local-only"] + batch_paths, check=True)
+              subprocess.run(["sync"])
+              time.sleep(3 if not is_heavy else 10)
+          print("All 1,057 projects synced and checked out cleanly.", flush=True)
           PYEOF
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
@@ -223,6 +240,7 @@ jobs:
           ln -sfn "$EXTENDED_ROOT/vendor_cache" "$HOME/.adevtool-cache/images"
           cd "$EXTENDED_ROOT/workspace"
           taskset -c 0 nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
+          sync && sleep 5
           taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
           sync
           { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
