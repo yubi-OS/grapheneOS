@@ -71,6 +71,12 @@ jobs:
       BUILD_VARIANT: ${{ inputs.variant || 'user' }}
       STAGE: ${{ inputs.stage || 'preflight-and-manifest' }}
       REPO_REV: v2.74
+      TOKIO_WORKER_THREADS: '1'
+      RAYON_NUM_THREADS: '1'
+      CARGO_BUILD_JOBS: '1'
+      GOMAXPROCS: '1'
+      UV_THREADPOOL_SIZE: '1'
+      OMP_NUM_THREADS: '1'
     steps:
       - name: Checkout yubi-OS/grapheneOS
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/bootstrap-repo-and-verify.sh
+          taskset -c 0 nice -n 19 ionice -c3 bash scripts/bootstrap-repo-and-verify.sh
 
       - name: Validate Updater Override & YubiKey AVB Signer Helpers
         shell: bash
@@ -106,7 +112,7 @@ jobs:
           bash scripts/patch-updater-url.sh "$TMP_XML" | tee evidence/helper-selftest.txt
           bash scripts/yubikey-avb-signer.sh --self-test | tee -a evidence/helper-selftest.txt
 
-      - name: Stage 3 - Single-Stream Throttled Resumable repo sync on /mnt/extended (-j1, pack.threads=1)
+      - name: Stage 3 - Batch-Paced Single-Core Throttled repo sync on /mnt/extended (taskset -c 0, -j1)
         if: inputs.stage == 'sync' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all'
         shell: bash
         run: |
@@ -119,9 +125,9 @@ jobs:
           git config --global pack.windowMemory "64m"
           git config --global core.preloadIndex false
           if [ -d "$EXTENDED_ROOT/workspace/.repo" ]; then
-            echo "Scanning .repo for stale locks or crash-corrupted refs (e.g. bad object refs/remotes/m/...)..."
+            echo "Scanning .repo for stale locks or crash-corrupted refs..."
             find "$EXTENDED_ROOT/workspace/.repo" \( -name "*.lock" -o -name "tmp_pack_*" -o -name "tmp_obj_*" \) -delete 2>/dev/null || true
-            python3 - "$EXTENDED_ROOT/workspace/.repo" <<'PYEOF'
+            taskset -c 0 nice -n 19 ionice -c3 python3 - "$EXTENDED_ROOT/workspace/.repo" <<'PYEOF'
           import os, subprocess, shutil, sys
           repo_dir = sys.argv[1]
           fixed = 0
@@ -162,7 +168,7 @@ jobs:
           PYEOF
           fi
           cd "$EXTENDED_ROOT/workspace"
-          nice -n 19 ionice -c3 repo init \
+          taskset -c 0 nice -n 19 ionice -c3 repo init \
             -u https://github.com/GrapheneOS/platform_manifest.git \
             -b "refs/tags/${MANIFEST_TAG}" \
             --repo-rev="${REPO_REV}" < /dev/null
@@ -172,8 +178,37 @@ jobs:
           fi
           git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
           git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
-          nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags --force-sync --force-broken -j1 --jobs-network=1 --jobs-checkout=1 || \
-            nice -n 19 ionice -c3 repo sync -c --no-clone-bundle --no-tags --force-sync -j1 --jobs-network=1 --jobs-checkout=1
+          taskset -c 0 nice -n 19 ionice -c3 python3 - <<'PYEOF'
+          import xml.etree.ElementTree as ET, subprocess, time, os, sys
+          tree = ET.parse(".repo/manifests/default.xml")
+          projects = []
+          for p in tree.getroot().findall("project"):
+              path = p.get("path") or p.get("name")
+              rev = p.get("revision")
+              projects.append((path, rev))
+          print(f"Total manifest projects: {len(projects)}")
+          todo = []
+          for path, rev in projects:
+              git_dir = os.path.join(path, ".git")
+              if os.path.exists(git_dir) and rev and len(rev) == 40:
+                  r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                  if r.returncode == 0 and r.stdout.strip() == rev:
+                      continue
+              todo.append(path)
+          print(f"Already at pinned revision: {len(projects) - len(todo)}/{len(projects)}; Remaining to sync: {len(todo)}")
+          batch_size = 35
+          for i in range(0, len(todo), batch_size):
+              batch = todo[i:i+batch_size]
+              print(f"=== Syncing batch {i//batch_size + 1}/{(len(todo) + batch_size - 1)//batch_size} ({len(batch)} repos, index {i}..{i+len(batch)-1}) ===", flush=True)
+              cmd = ["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "repo", "sync", "-c", "--no-clone-bundle", "--no-tags", "--force-sync", "--force-broken", "-j1", "--jobs-network=1", "--jobs-checkout=1"] + batch
+              res = subprocess.run(cmd)
+              if res.returncode != 0:
+                  print(f"Retrying batch {i//batch_size + 1} once after transient error...", flush=True)
+                  subprocess.run(cmd, check=True)
+              subprocess.run(["sync"])
+              time.sleep(10)
+          print("All batches synced; running final verification pass...", flush=True)
+          PYEOF
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
       - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
@@ -184,12 +219,12 @@ jobs:
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           export IMAGE_DOWNLOAD_DIR="$EXTENDED_ROOT/vendor_cache"
-          export UV_THREADPOOL_SIZE="2"
           mkdir -p "$HOME/.adevtool-cache"
           ln -sfn "$EXTENDED_ROOT/vendor_cache" "$HOME/.adevtool-cache/images"
           cd "$EXTENDED_ROOT/workspace"
-          nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
-          nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
+          taskset -c 0 nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
+          taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
+          sync
           { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
 
       - name: Stage 5 - Throttled OS Build on /mnt/extended
@@ -206,15 +241,15 @@ jobs:
           source build/envsetup.sh
           lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
           if [ "${TARGET_DEVICE}" = "sdk_phone64_x86_64" ] || [ "${TARGET_DEVICE}" = "sdk_phone64_arm64" ]; then
-            nice -n 19 ionice -c3 m -j4 -l6
+            taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2
           else
             export OFFICIAL_BUILD=true
             case "${TARGET_DEVICE}" in
               oriole|raven|bluejay)
-                nice -n 19 ionice -c3 m -j4 -l6 vendorbootimage target-files-package otatools-package
+                taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2 vendorbootimage target-files-package otatools-package
                 ;;
               *)
-                nice -n 19 ionice -c3 m -j4 -l6 vendorbootimage vendorkernelbootimage target-files-package otatools-package
+                taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2 vendorbootimage vendorkernelbootimage target-files-package otatools-package
                 ;;
             esac
           fi
@@ -234,8 +269,8 @@ jobs:
           cd "$EXTENDED_ROOT/workspace"
           source build/envsetup.sh
           lunch "${TARGET_DEVICE}-cur-user"
-          script/finalize.sh
-          script/generate-release.sh "${TARGET_DEVICE}" "${BUILD_NUMBER}"
+          taskset -c 0 nice -n 19 ionice -c3 script/finalize.sh
+          taskset -c 0 nice -n 19 ionice -c3 script/generate-release.sh "${TARGET_DEVICE}" "${BUILD_NUMBER}"
 
       - name: Upload CI Verification Evidence
         if: always()
