@@ -33,11 +33,7 @@ fi
 mkdir -p "$EXTENDED_ROOT"/{bin,x86_64-shim,.ssh,manifest-check,workspace,out,ccache,vendor_cache,kernels,vanadium,sdk,releases}
 cat > "$EXTENDED_ROOT/x86_64-shim/uname" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "-m" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "-i" ]; then
-  echo x86_64
-else
-  /usr/bin/uname "$@" | sed "s/aarch64/x86_64/g"
-fi
+/usr/bin/uname "$@" | sed "s/aarch64/x86_64/g; s/arm64/x86_64/g"
 EOF
 chmod 0755 "$EXTENDED_ROOT/x86_64-shim/uname"
 {

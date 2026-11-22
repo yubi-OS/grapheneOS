@@ -209,12 +209,15 @@ jobs:
             ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$QEMU_SYSROOT/lib64/ld-linux-x86-64.so.2"
             touch "$QEMU_SYSROOT/.bookworm-2.36-ready"
           fi
-          # Overlay native linux-arm64 build-tools (nsjail, ckati, ninja, toybox, bison, flex, make, aidl, aconfig, ziptime) onto linux-x86 so soong_ui runs native ARM64 binaries
+          # Overlay native linux-arm64 build-tools onto linux-x86 and install the x86_64 uname shim into prebuilts/build-tools/path/linux-x86/uname
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
-          if [ -d "$BT_DIR/linux-arm64/bin" ] && [ ! -f "$BT_DIR/linux-x86/.arm64-overlaid" ]; then
+          if [ -d "$BT_DIR/linux-arm64/bin" ]; then
             cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
             cp -af "$BT_DIR/linux-arm64/lib64/"* "$BT_DIR/linux-x86/lib64/" 2>/dev/null || true
-            touch "$BT_DIR/linux-x86/.arm64-overlaid"
+            rm -f "$BT_DIR/path/linux-x86/uname"
+            cp -f "$EXTENDED_ROOT/x86_64-shim/uname" "$BT_DIR/path/linux-x86/uname"
+            chmod 0755 "$BT_DIR/path/linux-x86/uname"
+            "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
           fi
           export QEMU_LD_PREFIX="$QEMU_SYSROOT"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
