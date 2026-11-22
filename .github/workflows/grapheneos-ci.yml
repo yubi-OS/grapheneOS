@@ -243,9 +243,10 @@ jobs:
           # Overlay native linux-arm64 build-tools and siso onto linux-x86 and install the x86_64 uname shim
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
           if [ -d "$BT_DIR/linux-arm64/bin" ]; then
-            cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
-            cp -af "$BT_DIR/linux-arm64/lib64/"* "$BT_DIR/linux-x86/lib64/" 2>/dev/null || true
-            # Use statically-linked native ARM64 python launchers so Soong intermediate copies do not look for relinterp libc_musl.so
+            # Restore clean glibc x86_64 binaries/libs first so sbox-sandboxed tools (bison, flex, m4, aidl, hidl-gen) use /lib64/ld-linux-x86-64.so.2 + x86_64 libc++.so instead of musl relinterp
+            git -C "$BT_DIR" checkout -f HEAD -- linux-x86 path/linux-x86
+            # Overlay only statically-linked native ARM64 binaries (ninja, py3-launcher-static64, py3-launcher-autorun-static64) that have zero shared library dependencies
+            cp -af "$BT_DIR/linux-arm64/bin/ninja" "$BT_DIR/linux-x86/bin/ninja"
             cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-launcher64"
             cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-cmd"
             cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-autorun-static64" "$BT_DIR/linux-x86/bin/py3-launcher-autorun64"
@@ -261,6 +262,7 @@ jobs:
             cp -f "$EXTENDED_ROOT/x86_64-shim/uname" "$BT_DIR/path/linux-x86/uname"
             chmod 0755 "$BT_DIR/path/linux-x86/uname"
             "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
+            env -i "$BT_DIR/linux-x86/bin/bison" --version | head -n 1
           fi
           SISO_DIR="$EXTENDED_ROOT/workspace/prebuilts/siso"
           if [ -f "$SISO_DIR/linux-arm64/siso" ]; then
