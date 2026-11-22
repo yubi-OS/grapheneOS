@@ -128,58 +128,11 @@ jobs:
           git config --global core.preloadIndex false
           git config --global core.fsync "objects,derived-metadata,reference"
           git config --global core.fsyncMethod "fsync"
-          if [ -d "$EXTENDED_ROOT/workspace/.repo" ]; then
-            echo "Scanning .repo for stale locks or crash-corrupted refs..."
-            find "$EXTENDED_ROOT/workspace/.repo" \( -name "*.lock" -o -name "tmp_pack_*" -o -name "tmp_obj_*" \) -delete 2>/dev/null || true
-            taskset -c 0 nice -n 19 ionice -c3 python3 - "$EXTENDED_ROOT/workspace/.repo" <<'PYEOF'
-          import os, subprocess, shutil, sys
-          repo_dir = sys.argv[1]
-          fixed = 0
-          for root_sub in ["projects", "project-objects"]:
-              base = os.path.join(repo_dir, root_sub)
-              if not os.path.isdir(base):
-                  continue
-              for dirpath, dirnames, filenames in os.walk(base):
-                  if dirpath.endswith(".git"):
-                      dirnames[:] = []
-                      obj_dir = os.path.join(dirpath, "objects")
-                      if os.path.isdir(obj_dir):
-                          for o_root, _, o_files in os.walk(obj_dir):
-                              for f in o_files:
-                                  fp = os.path.join(o_root, f)
-                                  try:
-                                      if os.path.getsize(fp) == 0:
-                                          os.unlink(fp)
-                                          fixed += 1
-                                  except OSError:
-                                      pass
-                      r = subprocess.run(["git", "--git-dir", dirpath, "for-each-ref"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-                      if r.returncode != 0 or "bad object" in r.stderr or "corrupt" in r.stderr:
-                          print(f"Repairing crash-corrupted git dir: {dirpath} -> {r.stderr.strip()}")
-                          for sub_ref in [("refs", "remotes", "m"), ("refs", "tags")]:
-                              p = os.path.join(dirpath, *sub_ref)
-                              if os.path.exists(p):
-                                  shutil.rmtree(p, ignore_errors=True)
-                          packed = os.path.join(dirpath, "packed-refs")
-                          if os.path.exists(packed):
-                              os.unlink(packed)
-                          r2 = subprocess.run(["git", "--git-dir", dirpath, "for-each-ref"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-                          if r2.returncode != 0:
-                              print(f"Removing unrecoverable git dir for clean re-fetch: {dirpath}")
-                              shutil.rmtree(dirpath, ignore_errors=True)
-                          fixed += 1
-          print(f"Crash-recovery scan complete (repaired/cleaned {fixed} git dirs).")
-          PYEOF
-          fi
           cd "$EXTENDED_ROOT/workspace"
           taskset -c 0 nice -n 19 ionice -c3 repo init \
             -u https://github.com/GrapheneOS/platform_manifest.git \
             -b "refs/tags/${MANIFEST_TAG}" \
             --repo-rev="${REPO_REV}" < /dev/null
-          if [ -x "$EXTENDED_ROOT/workspace/.repo/repo/repo" ]; then
-            cp -f "$EXTENDED_ROOT/workspace/.repo/repo/repo" "$EXTENDED_ROOT/bin/repo"
-            chmod 0755 "$EXTENDED_ROOT/bin/repo"
-          fi
           git -C .repo/manifests config gpg.ssh.allowedSignersFile "$EXTENDED_ROOT/.ssh/grapheneos_allowed_signers"
           git -C .repo/manifests verify-tag "${MANIFEST_TAG}"
           taskset -c 0 nice -n 19 ionice -c3 python3 - <<'PYEOF'
@@ -228,17 +181,45 @@ jobs:
           PYEOF
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
+      - name: Configure AOSP x86_64 glibc Sysroot for qemu-x86_64 Emulation
+        if: inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'build' || inputs.stage == 'release-sign' || inputs.stage == 'all'
+        shell: bash
+        run: |
+          set -euo pipefail
+          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
+          QEMU_SYSROOT="$EXTENDED_ROOT/x86_64-sysroot"
+          mkdir -p "$QEMU_SYSROOT/lib" "$QEMU_SYSROOT/usr"
+          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/lib64"
+          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/lib/x86_64-linux-gnu"
+          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/usr/lib"
+          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/usr/lib64"
+          export QEMU_LD_PREFIX="$QEMU_SYSROOT"
+          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
+          "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
+
       - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
         if: (inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
         shell: bash
         run: |
           set -euo pipefail
+          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
+          export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
+          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           export IMAGE_DOWNLOAD_DIR="$EXTENDED_ROOT/vendor_cache"
           mkdir -p "$HOME/.adevtool-cache"
           ln -sfn "$EXTENDED_ROOT/vendor_cache" "$HOME/.adevtool-cache/images"
           cd "$EXTENDED_ROOT/workspace"
+          STALLION_TMP="vendor/adevtool/dl/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip.tmp"
+          STALLION_ZIP="vendor/adevtool/dl/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip"
+          if [ -f "$STALLION_TMP" ] && [ ! -f "$STALLION_ZIP" ]; then
+            echo "Verifying already-downloaded $STALLION_TMP against pinned SHA-256..."
+            if echo "45cdadb1e34b4dd4462069a36c131ebe3a05d9d4be5f567f9cd61b7c69d5dbe8  $STALLION_TMP" | /usr/bin/sha256sum -c -; then
+              mv -f "$STALLION_TMP" "$STALLION_ZIP"
+              echo "Reused verified 4.2 GiB stallion factory image without re-downloading."
+            fi
+          fi
           taskset -c 0 nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
           sync && sleep 5
           taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
@@ -250,6 +231,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
+          export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
+          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export BUILD_NUMBER="${MANIFEST_TAG}"
@@ -281,6 +265,9 @@ jobs:
             echo "ERROR: Active swap detected in /proc/swaps. Disable swap before decrypting release signing keys into /dev/shm!" >&2
             exit 1
           fi
+          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
+          export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
+          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
