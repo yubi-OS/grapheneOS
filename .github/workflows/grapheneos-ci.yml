@@ -202,7 +202,7 @@ jobs:
           export LD_LIBRARY_PATH="$QEMU_SYSROOT/lib64:${LD_LIBRARY_PATH:-}"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
 
-      - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
+      - name: Stage 4 - RAM-Staged (/dev/shm) Throttled adevtool Vendor Extraction (Pixel 10a stallion)
         if: (inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
         shell: bash
         run: |
@@ -212,23 +212,43 @@ jobs:
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           export IMAGE_DOWNLOAD_DIR="$EXTENDED_ROOT/vendor_cache"
+          # Clamp os.cpus() to 1 core inside Node so adevtool sets UV_THREADPOOL_SIZE=1 and tiny-async-pool=1
+          cat > /dev/shm/one-cpu.cjs <<'EOF'
+          const os = require('os');
+          const origCpus = os.cpus.bind(os);
+          os.cpus = () => origCpus().slice(0, 1);
+          EOF
+          export NODE_OPTIONS="--require /dev/shm/one-cpu.cjs --max-old-space-size=8192"
+          # Stage TMPDIR and vendor/google_devices output in /dev/shm (58 GiB RAM) so 20 GiB super.img/partition unpack never hits mmcblk0
+          rm -rf /dev/shm/adevtool-tmp /dev/shm/google_devices_ram
+          mkdir -p /dev/shm/adevtool-tmp /dev/shm/google_devices_ram "$EXTENDED_ROOT/vendor_cache"
+          export TMPDIR="/dev/shm/adevtool-tmp"
+          trap 'rm -rf /dev/shm/adevtool-tmp /dev/shm/google_devices_ram /dev/shm/one-cpu.cjs' EXIT
           mkdir -p "$HOME/.adevtool-cache"
           ln -sfn "$EXTENDED_ROOT/vendor_cache" "$HOME/.adevtool-cache/images"
           cd "$EXTENDED_ROOT/workspace"
-          STALLION_TMP="vendor/adevtool/dl/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip.tmp"
-          STALLION_ZIP="vendor/adevtool/dl/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip"
-          if [ -f "$STALLION_TMP" ] && [ ! -f "$STALLION_ZIP" ]; then
-            echo "Verifying already-downloaded $STALLION_TMP against pinned SHA-256..."
-            if echo "45cdadb1e34b4dd4462069a36c131ebe3a05d9d4be5f567f9cd61b7c69d5dbe8  $STALLION_TMP" | /usr/bin/sha256sum -c -; then
-              mv -f "$STALLION_TMP" "$STALLION_ZIP"
-              echo "Reused verified 4.2 GiB stallion factory image without re-downloading."
+          for dir_cand in "vendor/adevtool/dl" "$EXTENDED_ROOT/vendor_cache"; do
+            STALLION_TMP="$dir_cand/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip.tmp"
+            STALLION_ZIP="$dir_cand/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip"
+            if [ -f "$STALLION_TMP" ] && [ ! -f "$STALLION_ZIP" ]; then
+              echo "Verifying already-downloaded $STALLION_TMP against pinned SHA-256..."
+              if echo "45cdadb1e34b4dd4462069a36c131ebe3a05d9d4be5f567f9cd61b7c69d5dbe8  $STALLION_TMP" | /usr/bin/sha256sum -c -; then
+                mv -f "$STALLION_TMP" "$STALLION_ZIP"
+                echo "Reused verified 4.2 GiB stallion factory image at $STALLION_ZIP"
+              fi
             fi
-          fi
+          done
           taskset -c 0 nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
           sync && sleep 5
+          rm -rf vendor/google_devices
+          ln -sfn /dev/shm/google_devices_ram vendor/google_devices
           taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
+          rm -f vendor/google_devices
+          mkdir -p vendor/google_devices
+          echo "Trickle-syncing extracted vendor/google_devices/${TARGET_DEVICE} from RAM (/dev/shm) to /mnt/extended at 10 MB/s..."
+          taskset -c 0 nice -n 19 ionice -c3 rsync -a --bwlimit=10000 /dev/shm/google_devices_ram/ vendor/google_devices/
           sync
-          { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
+          { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; du -sh "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
 
       - name: Stage 5 - Throttled OS Build on /mnt/extended
         if: inputs.stage == 'build' || inputs.stage == 'all'
