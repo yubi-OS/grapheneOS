@@ -151,7 +151,18 @@ jobs:
               if os.path.exists(git_dir) and rev and len(rev) == 40:
                   r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                   if r.returncode == 0 and r.stdout.strip() == rev:
-                      continue
+                      if path == "prebuilts/build-tools":
+                          continue
+                      t = subprocess.run(["git", "-C", path, "ls-tree", "--name-only", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                      top_entries = [x for x in t.stdout.splitlines() if x]
+                      if t.returncode == 0 and all(os.path.lexists(os.path.join(path, x)) for x in top_entries):
+                          d = subprocess.run(["git", "-C", path, "ls-files", "--deleted"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                          if d.returncode == 0 and d.stdout.strip() == "":
+                              tr = subprocess.run(["git", "-C", path, "ls-tree", "-r", "--name-only", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                              r_files = [x for x in tr.stdout.splitlines() if x]
+                              if tr.returncode == 0 and (not r_files or (os.path.lexists(os.path.join(path, r_files[0])) and os.path.lexists(os.path.join(path, r_files[-1])))):
+                                  continue
+                      print(f"Detected incomplete working-tree checkout in {path}; scheduling repair...", flush=True)
               todo.append((path, name, rev))
           print(f"Already checked out at pinned revision: {len(projects) - len(todo)}/{len(projects)}; Remaining: {len(todo)}", flush=True)
           idx = 0
@@ -237,10 +248,10 @@ jobs:
           os.cpus = () => origCpus().slice(0, 1);
           EOF
           export NODE_OPTIONS="--require /dev/shm/one-cpu.cjs --max-old-space-size=8192"
-          rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/out_adevtool_deps /dev/shm/google_devices_ram
+          rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/google_devices_ram
           mkdir -p /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/out_adevtool_deps /dev/shm/google_devices_ram "$EXTENDED_ROOT/vendor_cache"
           export TMPDIR="/dev/shm/adevtool-tmp"
-          trap 'rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/out_adevtool_deps /dev/shm/google_devices_ram /dev/shm/one-cpu.cjs' EXIT
+          trap 'rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/google_devices_ram /dev/shm/one-cpu.cjs' EXIT
           cd "$EXTENDED_ROOT/workspace"
           mkdir -p vendor/adevtool/dl
           for dir_cand in "vendor/adevtool/dl" "$EXTENDED_ROOT/vendor_cache"; do
