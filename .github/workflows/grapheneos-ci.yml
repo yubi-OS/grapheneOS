@@ -235,27 +235,24 @@ jobs:
             ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$QEMU_SYSROOT/lib64/ld-linux-x86-64.so.2"
             touch "$QEMU_SYSROOT/.bookworm-2.36-ready"
           fi
-          # Install x86_64 glibc 2.36 dynamic linker and runtime libs into /lib64 and /lib/x86_64-linux-gnu so siso/soong scrubbed environments (without QEMU_LD_PREFIX) resolve /lib64/ld-linux-x86-64.so.2
+          # Install x86_64 glibc 2.36 dynamic linker and runtime libs into /lib64 and /lib/x86_64-linux-gnu so siso/soong/sbox scrubbed environments resolve /lib64/ld-linux-x86-64.so.2 and libc++.so
           sudo mkdir -p /lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
           sudo cp -af "$QEMU_SYSROOT/lib/x86_64-linux-gnu/"* /lib/x86_64-linux-gnu/
           sudo cp -af "$QEMU_SYSROOT/usr/lib/x86_64-linux-gnu/"* /usr/lib/x86_64-linux-gnu/
           sudo ln -sfn /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
-          # Overlay native linux-arm64 build-tools and siso onto linux-x86 and install the x86_64 uname shim
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
           if [ -d "$BT_DIR/linux-arm64/bin" ]; then
-            # Restore clean glibc x86_64 binaries/libs first so sbox-sandboxed tools (bison, flex, m4, aidl, hidl-gen) use /lib64/ld-linux-x86-64.so.2 + x86_64 libc++.so instead of musl relinterp
+            # Restore clean glibc x86_64 binaries/libs (including dynamically-linked py3-launcher64 and py3-launcher-autorun64 so Python ctypes/dlopen works inside sbox)
             git -C "$BT_DIR" checkout -f HEAD -- linux-x86 path/linux-x86
-            # Overlay only statically-linked native ARM64 binaries (ninja, py3-launcher-static64, py3-launcher-autorun-static64) that have zero shared library dependencies
+            sudo cp -af "$BT_DIR/linux-x86/lib64/"*.so* /usr/lib/x86_64-linux-gnu/
+            # Overlay only statically-linked native ARM64 ninja (does not use dlopen or relinterp)
             cp -af "$BT_DIR/linux-arm64/bin/ninja" "$BT_DIR/linux-x86/bin/ninja"
-            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-launcher64"
-            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-cmd"
-            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-autorun-static64" "$BT_DIR/linux-x86/bin/py3-launcher-autorun64"
-            for out_cand in "/dev/shm/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
+            for out_cand in "$EXTENDED_ROOT/out_adevtool_deps" "/dev/shm/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
               if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64" ]; then
-                cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64/py3-launcher"
+                cp -af "$BT_DIR/linux-x86/bin/py3-launcher64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64/py3-launcher"
               fi
               if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64" ]; then
-                cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-autorun-static64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64/py3-launcher-autorun"
+                cp -af "$BT_DIR/linux-x86/bin/py3-launcher-autorun64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64/py3-launcher-autorun"
               fi
             done
             rm -f "$BT_DIR/path/linux-x86/uname"
@@ -273,7 +270,7 @@ jobs:
           "$EXTENDED_ROOT/workspace/prebuilts/go/linux-x86/bin/go" version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
           env -i "$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/clang-r584948b/bin/clang++" --version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
 
-      - name: Stage 4 - RAM-Staged (/dev/shm) Throttled adevtool Vendor Extraction (Pixel 10a stallion)
+      - name: Stage 4 - Persistent (/mnt/extended) Throttled adevtool Vendor Extraction (Pixel 10a stallion)
         if: (inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
         shell: bash
         run: |
@@ -287,10 +284,15 @@ jobs:
           os.cpus = () => origCpus().slice(0, 1);
           EOF
           export NODE_OPTIONS="--require /dev/shm/one-cpu.cjs --max-old-space-size=8192"
-          rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/google_devices_ram
-          mkdir -p /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/out_adevtool_deps /dev/shm/google_devices_ram "$EXTENDED_ROOT/vendor_cache"
-          export TMPDIR="/dev/shm/adevtool-tmp"
-          trap 'rm -rf /dev/shm/adevtool-tmp /dev/shm/adevtool-unpacked /dev/shm/google_devices_ram /dev/shm/one-cpu.cjs' EXIT
+          mkdir -p "$EXTENDED_ROOT/out_adevtool_deps" "$EXTENDED_ROOT/vendor_cache/tmp"
+          # If a prior run still has /dev/shm/out_adevtool_deps in RAM, migrate it once to persistent $EXTENDED_ROOT/out_adevtool_deps before building
+          if [ -f /dev/shm/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja ] && [ ! -f "$EXTENDED_ROOT/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja" ]; then
+            echo "Migrating /dev/shm/out_adevtool_deps to persistent $EXTENDED_ROOT/out_adevtool_deps..."
+            taskset -c 0 nice -n 19 ionice -c3 rsync -a --bwlimit=15000 /dev/shm/out_adevtool_deps/ "$EXTENDED_ROOT/out_adevtool_deps/"
+            rm -rf /dev/shm/out_adevtool_deps
+          fi
+          export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
+          trap 'rm -f /dev/shm/one-cpu.cjs' EXIT
           cd "$EXTENDED_ROOT/workspace"
           mkdir -p vendor/adevtool/dl
           for dir_cand in "vendor/adevtool/dl" "$EXTENDED_ROOT/vendor_cache"; do
@@ -304,16 +306,14 @@ jobs:
               fi
             fi
           done
-          rm -rf vendor/adevtool/dl/unpacked
-          ln -sfn /dev/shm/adevtool-unpacked vendor/adevtool/dl/unpacked
+          rm -rf out_adevtool_deps
+          ln -sfn "$EXTENDED_ROOT/out_adevtool_deps" out_adevtool_deps
           ADEVTOOL_REV=$(git -C vendor/adevtool rev-parse HEAD)
-          if [ ! -f "$EXTENDED_ROOT/out_adevtool_deps_cache/adevtool_revision" ] || [ "$(cat "$EXTENDED_ROOT/out_adevtool_deps_cache/adevtool_revision" 2>/dev/null)" != "$ADEVTOOL_REV" ]; then
-            echo "Building adevtool host dependencies in /dev/shm/out_adevtool_deps (RAM, zero mmcblk0 I/O)..."
-            rm -rf out_adevtool_deps
-            ln -sfn /dev/shm/out_adevtool_deps out_adevtool_deps
-            if [ -f /dev/shm/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja ] && [ -f /dev/shm/out_adevtool_deps/soong/build.sdk_phone64_x86_64.ninja ]; then
-              echo "Reusing existing Ninja graph in /dev/shm/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja (skipping 3.5h soong_build + ckati)..."
-              rm -f /dev/shm/out_adevtool_deps/.ninja_lock
+          if [ ! -f "$EXTENDED_ROOT/out_adevtool_deps/adevtool_revision" ] || [ "$(cat "$EXTENDED_ROOT/out_adevtool_deps/adevtool_revision" 2>/dev/null)" != "$ADEVTOOL_REV" ]; then
+            echo "Building adevtool host dependencies persistently in $EXTENDED_ROOT/out_adevtool_deps..."
+            if [ -f "$EXTENDED_ROOT/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja" ] && [ -f "$EXTENDED_ROOT/out_adevtool_deps/soong/build.sdk_phone64_x86_64.ninja" ]; then
+              echo "Reusing existing persistent Ninja graph in $EXTENDED_ROOT/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja..."
+              rm -f "$EXTENDED_ROOT/out_adevtool_deps/.ninja_lock"
               SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
               taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
                 -d keepdepfile -d keeprsp \
@@ -332,25 +332,14 @@ jobs:
                 m -j1 aapt2 apksigner aprotoc arsclib debugfs dispol fsck.erofs lpdump lpunpack lz4 ota_extractor simg2img sqlite3 toybox
               '
             fi
-            echo -n "$ADEVTOOL_REV" > /dev/shm/out_adevtool_deps/adevtool_revision
-            mkdir -p "$EXTENDED_ROOT/out_adevtool_deps_cache/host"
-            taskset -c 0 nice -n 19 ionice -c3 rsync -a --bwlimit=10000 /dev/shm/out_adevtool_deps/host/linux-x86 "$EXTENDED_ROOT/out_adevtool_deps_cache/host/"
-            cp -f /dev/shm/out_adevtool_deps/adevtool_revision "$EXTENDED_ROOT/out_adevtool_deps_cache/adevtool_revision"
-            rm -rf /dev/shm/out_adevtool_deps/*
+            echo -n "$ADEVTOOL_REV" > "$EXTENDED_ROOT/out_adevtool_deps/adevtool_revision"
+            sync
           fi
-          rm -rf out_adevtool_deps
-          ln -sfn "$EXTENDED_ROOT/out_adevtool_deps_cache" out_adevtool_deps
           export ADEVTOOL_SKIP_DEP_BUILD="1"
           taskset -c 0 nice -n 19 ionice -c3 yarn --cwd vendor/adevtool install --frozen-lockfile
           sync && sleep 5
-          rm -rf vendor/google_devices
-          ln -sfn /dev/shm/google_devices_ram vendor/google_devices
-          taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
-          rm -f vendor/google_devices vendor/adevtool/dl/unpacked
-          rm -rf /dev/shm/adevtool-unpacked
           mkdir -p vendor/google_devices
-          echo "Trickle-syncing extracted vendor/google_devices/${TARGET_DEVICE} from RAM (/dev/shm) to /mnt/extended at 10 MB/s..."
-          taskset -c 0 nice -n 19 ionice -c3 rsync -a --bwlimit=10000 /dev/shm/google_devices_ram/ vendor/google_devices/
+          taskset -c 0 nice -n 19 ionice -c3 vendor/adevtool/bin/run generate-all -d "${TARGET_DEVICE}"
           sync
           { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; du -sh "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
 
