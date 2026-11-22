@@ -245,6 +245,18 @@ jobs:
           if [ -d "$BT_DIR/linux-arm64/bin" ]; then
             cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
             cp -af "$BT_DIR/linux-arm64/lib64/"* "$BT_DIR/linux-x86/lib64/" 2>/dev/null || true
+            # Use statically-linked native ARM64 python launchers so Soong intermediate copies do not look for relinterp libc_musl.so
+            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-launcher64"
+            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$BT_DIR/linux-x86/bin/py3-cmd"
+            cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-autorun-static64" "$BT_DIR/linux-x86/bin/py3-launcher-autorun64"
+            for out_cand in "/dev/shm/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
+              if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64" ]; then
+                cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-static64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64/py3-launcher"
+              fi
+              if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64" ]; then
+                cp -af "$BT_DIR/linux-arm64/bin/py3-launcher-autorun-static64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64/py3-launcher-autorun"
+              fi
+            done
             rm -f "$BT_DIR/path/linux-x86/uname"
             cp -f "$EXTENDED_ROOT/x86_64-shim/uname" "$BT_DIR/path/linux-x86/uname"
             chmod 0755 "$BT_DIR/path/linux-x86/uname"
