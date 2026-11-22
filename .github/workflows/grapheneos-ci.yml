@@ -165,29 +165,44 @@ jobs:
                       print(f"Detected incomplete working-tree checkout in {path}; scheduling repair...", flush=True)
               todo.append((path, name, rev))
           print(f"Already checked out at pinned revision: {len(projects) - len(todo)}/{len(projects)}; Remaining: {len(todo)}", flush=True)
-          idx = 0
-          while idx < len(todo):
-              path, name, rev = todo[idx]
-              is_heavy = path.startswith("prebuilts/") or path.startswith("external/vanadium") or path.startswith("external/chromium") or "-kernels/" in path or "kernel/prebuilts" in path
-              if is_heavy:
-                  batch_paths = [path]
-                  idx += 1
-              else:
-                  batch_paths = []
-                  while idx < len(todo) and len(batch_paths) < 10:
-                      p_i = todo[idx][0]
-                      if p_i.startswith("prebuilts/") or p_i.startswith("external/vanadium") or p_i.startswith("external/chromium") or "-kernels/" in p_i or "kernel/prebuilts" in p_i:
-                          break
-                      batch_paths.append(p_i)
-                      idx += 1
-              print(f"[{idx}/{len(todo)}] Syncing ({len(batch_paths)}): {batch_paths[0]} ...", flush=True)
-              base_cmd = ["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "repo", "sync", "-c", "--no-clone-bundle", "--no-tags", "--force-sync", "--force-broken", "-j1", "--jobs-network=1", "--jobs-checkout=1"]
-              subprocess.run(base_cmd + ["--network-only"] + batch_paths, check=True)
-              subprocess.run(["sync"])
-              time.sleep(3 if not is_heavy else 8)
-              subprocess.run(base_cmd + ["--local-only"] + batch_paths, check=True)
-              subprocess.run(["sync"])
-              time.sleep(3 if not is_heavy else 10)
+          for idx, (path, name, rev) in enumerate(todo, 1):
+              print(f"[{idx}/{len(todo)}] Repairing/syncing {path} ({name} @ {rev}) ...", flush=True)
+              for lock_p in [
+                  os.path.join(path, ".git", "index.lock"),
+                  os.path.join(".repo", "projects", f"{path}.git", "index.lock"),
+              ]:
+                  if os.path.lexists(lock_p):
+                      os.remove(lock_p)
+              subprocess.run([
+                  "rm", "-rf",
+                  os.path.join(path, ".git", "refs", "remotes", "m"),
+                  os.path.join(".repo", "projects", f"{path}.git", "refs", "remotes", "m")
+              ])
+              repaired_locally = False
+              if os.path.exists(os.path.join(path, ".git")) and rev and len(rev) == 40:
+                  chk = subprocess.run(["git", "-C", path, "cat-file", "-e", f"{rev}^{{tree}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  if chk.returncode == 0:
+                      rst = subprocess.run(["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "git", "-C", path, "reset", "--hard", rev])
+                      if rst.returncode == 0:
+                          repaired_locally = True
+                          print(f"  -> Repaired {path} locally via git reset --hard {rev[:12]}", flush=True)
+                          subprocess.run(["sync"])
+                          time.sleep(3)
+              if not repaired_locally:
+                  print(f"  -> Re-syncing {path} from remote (cleaning corrupt local git state for {name})...", flush=True)
+                  subprocess.run([
+                      "rm", "-rf",
+                      path,
+                      os.path.join(".repo", "projects", f"{path}.git"),
+                      os.path.join(".repo", "project-objects", f"{name}.git")
+                  ], check=True)
+                  base_cmd = ["taskset", "-c", "0", "nice", "-n", "19", "ionice", "-c3", "repo", "sync", "-c", "--no-clone-bundle", "--no-tags", "--force-sync", "-j1", "--jobs-network=1", "--jobs-checkout=1"]
+                  subprocess.run(base_cmd + ["--network-only", path], check=True)
+                  subprocess.run(["sync"])
+                  time.sleep(4)
+                  subprocess.run(base_cmd + ["--local-only", path], check=True)
+                  subprocess.run(["sync"])
+                  time.sleep(4)
           print("All 1,057 projects synced and checked out cleanly.", flush=True)
           PYEOF
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
