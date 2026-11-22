@@ -181,26 +181,44 @@ jobs:
           PYEOF
           { date -u +%FT%TZ; df -h /mnt/extended; du -sh "$EXTENDED_ROOT/workspace"; } | tee "$GITHUB_WORKSPACE/evidence/repo-sync-summary.txt"
 
-      - name: Configure AOSP x86_64 glibc Sysroot for qemu-x86_64 Emulation
+      - name: Configure Debian Bookworm x86_64 glibc 2.36 Sysroot & Native ARM64 Build-Tools
         if: inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'build' || inputs.stage == 'release-sign' || inputs.stage == 'all'
         shell: bash
         run: |
           set -euo pipefail
-          AOSP_GCC="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"
           QEMU_SYSROOT="$EXTENDED_ROOT/x86_64-sysroot"
-          rm -rf "$QEMU_SYSROOT"
-          mkdir -p "$QEMU_SYSROOT/lib64" "$QEMU_SYSROOT/lib" "$QEMU_SYSROOT/usr"
-          for d in "$AOSP_GCC/sysroot/lib" "$AOSP_GCC/sysroot/usr/lib" "$AOSP_GCC/x86_64-linux/lib64" "$AOSP_GCC/lib64" "$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64" "$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64"; do
-            if [ -d "$d" ]; then
-              ln -sf "$d"/* "$QEMU_SYSROOT/lib64/" 2>/dev/null || true
-            fi
-          done
-          ln -sfn ../lib64 "$QEMU_SYSROOT/lib/x86_64-linux-gnu"
-          ln -sfn ../lib64 "$QEMU_SYSROOT/usr/lib"
-          ln -sfn ../lib64 "$QEMU_SYSROOT/usr/lib64"
+          DEB_CACHE="$EXTENDED_ROOT/bin/debs-amd64"
+          mkdir -p "$DEB_CACHE"
+          if [ ! -f "$QEMU_SYSROOT/.bookworm-2.36-ready" ]; then
+            rm -rf "$QEMU_SYSROOT"
+            mkdir -p "$QEMU_SYSROOT"
+            fetch_and_unpack() {
+              local url="$1" fn="$2" sha256="$3" sha512="$4"
+              if [ ! -f "$DEB_CACHE/$fn" ]; then
+                curl -fsSL "$url" -o "$DEB_CACHE/$fn"
+              fi
+              echo "$sha256  $DEB_CACHE/$fn" | sha256sum --check --strict
+              echo "$sha512  $DEB_CACHE/$fn" | sha512sum --check --strict
+              dpkg-deb -x "$DEB_CACHE/$fn" "$QEMU_SYSROOT"
+            }
+            fetch_and_unpack "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.36-9+deb12u14_amd64.deb" "libc6.deb" "ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf" "2672eff8c51312d24a026043d4b6322de23e37f807dc3925c588474e413de2b7194926ac84ac075aa70dd8b6fbe7cfff3d015995d0a3c200fb8b191f59ac4595"
+            fetch_and_unpack "https://deb.debian.org/debian/pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_amd64.deb" "libgcc-s1.deb" "3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7" "5fb1aac6240ac55280bb90393746b17498ffdcbb24e49afa01052bd9468bed594bc5c43938f2af594b48d2eab9e2dd07ffd3d5f276be5b16a00116479ff6cb68"
+            fetch_and_unpack "https://deb.debian.org/debian/pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_amd64.deb" "libstdcpp6.deb" "5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d" "43c0d1cb52b29c12b7d5ce7629b2690b84e60aa98e8fe05481eeca857781e341c387b7067916ac770ffc8879fec86810c6a7a0e31011db3db8112f1fe9b01753"
+            fetch_and_unpack "https://deb.debian.org/debian/pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_amd64.deb" "zlib1g.deb" "d7dd1d1411fedf27f5e27650a6eff20ef294077b568f4c8c5e51466dc7c08ce4" "f3ef7353438d4c77687ad58dd9da7bf78f5e95cb9ddb0cb691e0e9364d22d27badb852dab4e2452f4f705fd6b0d5b34fd1fd18801242476de1bf136d2681f0d9"
+            mkdir -p "$QEMU_SYSROOT/lib64"
+            ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$QEMU_SYSROOT/lib64/ld-linux-x86-64.so.2"
+            touch "$QEMU_SYSROOT/.bookworm-2.36-ready"
+          fi
+          # Overlay native linux-arm64 build-tools (nsjail, ckati, ninja, toybox, bison, flex, make, aidl, aconfig, ziptime) onto linux-x86 so soong_ui runs native ARM64 binaries
+          BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
+          if [ -d "$BT_DIR/linux-arm64/bin" ] && [ ! -f "$BT_DIR/linux-x86/.arm64-overlaid" ]; then
+            cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
+            cp -af "$BT_DIR/linux-arm64/lib64/"* "$BT_DIR/linux-x86/lib64/" 2>/dev/null || true
+            touch "$BT_DIR/linux-x86/.arm64-overlaid"
+          fi
           export QEMU_LD_PREFIX="$QEMU_SYSROOT"
-          export LD_LIBRARY_PATH="$QEMU_SYSROOT/lib64:${LD_LIBRARY_PATH:-}"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
+          "$EXTENDED_ROOT/workspace/prebuilts/go/linux-x86/bin/go" version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
 
       - name: Stage 4 - RAM-Staged (/dev/shm) Throttled adevtool Vendor Extraction (Pixel 10a stallion)
         if: (inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
@@ -208,7 +226,6 @@ jobs:
         run: |
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           cat > /dev/shm/one-cpu.cjs <<'EOF'
@@ -236,7 +253,6 @@ jobs:
           done
           rm -rf vendor/adevtool/dl/unpacked
           ln -sfn /dev/shm/adevtool-unpacked vendor/adevtool/dl/unpacked
-          # Ensure out_adevtool_deps builds in /dev/shm RAM with -j1 if not already cached on /mnt/extended
           ADEVTOOL_REV=$(git -C vendor/adevtool rev-parse HEAD)
           if [ ! -f "$EXTENDED_ROOT/out_adevtool_deps_cache/adevtool_revision" ] || [ "$(cat "$EXTENDED_ROOT/out_adevtool_deps_cache/adevtool_revision" 2>/dev/null)" != "$ADEVTOOL_REV" ]; then
             echo "Building adevtool host dependencies in /dev/shm/out_adevtool_deps (RAM, zero mmcblk0 I/O)..."
@@ -278,7 +294,6 @@ jobs:
         run: |
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export BUILD_NUMBER="${MANIFEST_TAG}"
@@ -311,7 +326,6 @@ jobs:
             exit 1
           fi
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
