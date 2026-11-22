@@ -186,15 +186,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
+          AOSP_GCC="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8"
           QEMU_SYSROOT="$EXTENDED_ROOT/x86_64-sysroot"
-          mkdir -p "$QEMU_SYSROOT/lib" "$QEMU_SYSROOT/usr"
-          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/lib64"
-          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/lib/x86_64-linux-gnu"
-          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/usr/lib"
-          ln -sfn "$AOSP_SYSROOT/usr/lib" "$QEMU_SYSROOT/usr/lib64"
+          rm -rf "$QEMU_SYSROOT"
+          mkdir -p "$QEMU_SYSROOT/lib64" "$QEMU_SYSROOT/lib" "$QEMU_SYSROOT/usr"
+          for d in "$AOSP_GCC/sysroot/lib" "$AOSP_GCC/sysroot/usr/lib" "$AOSP_GCC/x86_64-linux/lib64" "$AOSP_GCC/lib64" "$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64" "$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64"; do
+            if [ -d "$d" ]; then
+              ln -sf "$d"/* "$QEMU_SYSROOT/lib64/" 2>/dev/null || true
+            fi
+          done
+          ln -sfn ../lib64 "$QEMU_SYSROOT/lib/x86_64-linux-gnu"
+          ln -sfn ../lib64 "$QEMU_SYSROOT/usr/lib"
+          ln -sfn ../lib64 "$QEMU_SYSROOT/usr/lib64"
           export QEMU_LD_PREFIX="$QEMU_SYSROOT"
-          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$QEMU_SYSROOT/lib64:${LD_LIBRARY_PATH:-}"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
 
       - name: Stage 4 - adevtool Vendor Extraction for Target Device (Pixel 10a stallion)
@@ -202,9 +207,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           export IMAGE_DOWNLOAD_DIR="$EXTENDED_ROOT/vendor_cache"
@@ -231,9 +235,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export BUILD_NUMBER="${MANIFEST_TAG}"
@@ -265,9 +268,8 @@ jobs:
             echo "ERROR: Active swap detected in /proc/swaps. Disable swap before decrypting release signing keys into /dev/shm!" >&2
             exit 1
           fi
-          AOSP_SYSROOT="$EXTENDED_ROOT/workspace/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/sysroot"
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export LD_LIBRARY_PATH="$AOSP_SYSROOT/usr/lib:$EXTENDED_ROOT/workspace/prebuilts/build-tools/linux-x86/lib64:$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/lib64:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$EXTENDED_ROOT/x86_64-sysroot/lib64:${LD_LIBRARY_PATH:-}"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
