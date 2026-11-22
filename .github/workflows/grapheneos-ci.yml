@@ -151,7 +151,7 @@ jobs:
               if os.path.exists(git_dir) and rev and len(rev) == 40:
                   r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                   if r.returncode == 0 and r.stdout.strip() == rev:
-                      if path == "prebuilts/build-tools":
+                      if path in ("prebuilts/build-tools", "prebuilts/siso"):
                           continue
                       t = subprocess.run(["git", "-C", path, "ls-tree", "--name-only", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                       top_entries = [x for x in t.stdout.splitlines() if x]
@@ -235,7 +235,12 @@ jobs:
             ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$QEMU_SYSROOT/lib64/ld-linux-x86-64.so.2"
             touch "$QEMU_SYSROOT/.bookworm-2.36-ready"
           fi
-          # Overlay native linux-arm64 build-tools onto linux-x86 and install the x86_64 uname shim into prebuilts/build-tools/path/linux-x86/uname
+          # Install x86_64 glibc 2.36 dynamic linker and runtime libs into /lib64 and /lib/x86_64-linux-gnu so siso/soong scrubbed environments (without QEMU_LD_PREFIX) resolve /lib64/ld-linux-x86-64.so.2
+          sudo mkdir -p /lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
+          sudo cp -af "$QEMU_SYSROOT/lib/x86_64-linux-gnu/"* /lib/x86_64-linux-gnu/
+          sudo cp -af "$QEMU_SYSROOT/usr/lib/x86_64-linux-gnu/"* /usr/lib/x86_64-linux-gnu/
+          sudo ln -sfn /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+          # Overlay native linux-arm64 build-tools and siso onto linux-x86 and install the x86_64 uname shim
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
           if [ -d "$BT_DIR/linux-arm64/bin" ]; then
             cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
@@ -245,9 +250,14 @@ jobs:
             chmod 0755 "$BT_DIR/path/linux-x86/uname"
             "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
           fi
+          SISO_DIR="$EXTENDED_ROOT/workspace/prebuilts/siso"
+          if [ -f "$SISO_DIR/linux-arm64/siso" ]; then
+            cp -af "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"
+          fi
           export QEMU_LD_PREFIX="$QEMU_SYSROOT"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
           "$EXTENDED_ROOT/workspace/prebuilts/go/linux-x86/bin/go" version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
+          env -i "$EXTENDED_ROOT/workspace/prebuilts/clang/host/linux-x86/clang-r584948b/bin/clang++" --version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
 
       - name: Stage 4 - RAM-Staged (/dev/shm) Throttled adevtool Vendor Extraction (Pixel 10a stallion)
         if: (inputs.stage == 'adevtool' || inputs.stage == 'sync-and-adevtool' || inputs.stage == 'all') && inputs.target != 'sdk_phone64_x86_64' && inputs.target != 'sdk_phone64_arm64'
@@ -287,14 +297,27 @@ jobs:
             echo "Building adevtool host dependencies in /dev/shm/out_adevtool_deps (RAM, zero mmcblk0 I/O)..."
             rm -rf out_adevtool_deps
             ln -sfn /dev/shm/out_adevtool_deps out_adevtool_deps
-            taskset -c 0 nice -n 19 ionice -c3 bash -c '
-              set -euo pipefail
-              export ANDROID_QUIET_BUILD=true
-              export OUT_DIR=out_adevtool_deps
-              source build/envsetup.sh
-              lunch sdk_phone64_x86_64-cur-userdebug
-              m -j1 aapt2 apksigner aprotoc arsclib debugfs dispol fsck.erofs lpdump lpunpack lz4 ota_extractor simg2img sqlite3 toybox
-            '
+            if [ -f /dev/shm/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja ] && [ -f /dev/shm/out_adevtool_deps/soong/build.sdk_phone64_x86_64.ninja ]; then
+              echo "Reusing existing Ninja graph in /dev/shm/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja (skipping 3.5h soong_build + ckati)..."
+              rm -f /dev/shm/out_adevtool_deps/.ninja_lock
+              SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
+              taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
+                -d keepdepfile -d keeprsp \
+                --local_jobs 1 \
+                --log_dir "$EXTENDED_ROOT/workspace/out_adevtool_deps" \
+                --config_repo_dir=out_adevtool_deps/siso_config \
+                -f out_adevtool_deps/combined-sdk_phone64_x86_64.ninja \
+                aapt2 apksigner aprotoc arsclib debugfs dispol fsck.erofs lpdump lpunpack lz4 ota_extractor simg2img sqlite3 toybox
+            else
+              taskset -c 0 nice -n 19 ionice -c3 bash -c '
+                set -euo pipefail
+                export ANDROID_QUIET_BUILD=true
+                export OUT_DIR=out_adevtool_deps
+                source build/envsetup.sh
+                lunch sdk_phone64_x86_64-cur-userdebug
+                m -j1 aapt2 apksigner aprotoc arsclib debugfs dispol fsck.erofs lpdump lpunpack lz4 ota_extractor simg2img sqlite3 toybox
+              '
+            fi
             echo -n "$ADEVTOOL_REV" > /dev/shm/out_adevtool_deps/adevtool_revision
             mkdir -p "$EXTENDED_ROOT/out_adevtool_deps_cache/host"
             taskset -c 0 nice -n 19 ionice -c3 rsync -a --bwlimit=10000 /dev/shm/out_adevtool_deps/host/linux-x86 "$EXTENDED_ROOT/out_adevtool_deps_cache/host/"
