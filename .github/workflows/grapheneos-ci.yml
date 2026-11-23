@@ -63,7 +63,7 @@ concurrency:
 jobs:
   grapheneos-pipeline:
     runs-on: [self-hosted, Linux, ARM64, HIGH-MEM]
-    timeout-minutes: 720
+    timeout-minutes: 2880
     env:
       EXTENDED_ROOT: /mnt/extended/grapheneos
       MANIFEST_TAG: ${{ inputs.manifest_tag || '2026111800' }}
