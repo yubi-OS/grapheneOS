@@ -324,33 +324,7 @@ jobs:
               echo "Reusing existing persistent Ninja graph in $EXTENDED_ROOT/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja..."
               rm -f "$EXTENDED_ROOT/out_adevtool_deps/.ninja_lock"
               # Scrub any .o / .a files that were zero-filled by an unclean host crash so ld.lld never hits corrupt archive members
-              python3 - <<'PYEOF'
-              import os, shutil
-              root = "/mnt/extended/grapheneos/out_adevtool_deps/soong/.intermediates"
-              valid_magics = (b"\x7fELF", b"BC\xc0\xde", b"\xde\xc0\x17\x0b")
-              bad_dirs = set()
-              if os.path.isdir(root):
-                  for dirpath, _, filenames in os.walk(root):
-                      for fn in filenames:
-                          if fn.endswith(".o"):
-                              fp = os.path.join(dirpath, fn)
-                              try:
-                                  with open(fp, "rb") as f:
-                                      hdr = f.read(4)
-                                  if len(hdr) < 4 or hdr not in valid_magics:
-                                      print("Removing crash-corrupted object:", fp, flush=True)
-                                      os.remove(fp)
-                                      bad_dirs.add(os.path.dirname(dirpath))
-                              except OSError:
-                                  pass
-                  for bd in bad_dirs:
-                      for dirpath, _, filenames in os.walk(bd):
-                          for fn in filenames:
-                              if fn.endswith(".a"):
-                                  ap = os.path.join(dirpath, fn)
-                                  print("Removing stale archive with corrupted member:", ap, flush=True)
-                                  os.remove(ap)
-              PYEOF
+              python3 -c 'import os; root="/mnt/extended/grapheneos/out_adevtool_deps/soong/.intermediates"; magics=(b"\x7fELF",b"BC\xc0\xde",b"\xde\xc0\x17\x0b"); bad=set(); [([os.remove(os.path.join(dp,fn)),bad.add(os.path.dirname(dp)),print("Removed corrupt .o:",os.path.join(dp,fn),flush=True)] if open(os.path.join(dp,fn),"rb").read(4) not in magics else None) for dp,_,fns in os.walk(root) for fn in fns if fn.endswith(".o")]; [([os.remove(os.path.join(dp,fn)),print("Removed stale .a:",os.path.join(dp,fn),flush=True)]) for bd in bad for dp,_,fns in os.walk(bd) for fn in fns if fn.endswith(".a")]'
               SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
               taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
                 -d keepdepfile -d keeprsp \
