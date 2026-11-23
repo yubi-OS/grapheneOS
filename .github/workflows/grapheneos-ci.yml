@@ -324,7 +324,7 @@ jobs:
               echo "Reusing existing persistent Ninja graph in $EXTENDED_ROOT/out_adevtool_deps/combined-sdk_phone64_x86_64.ninja..."
               rm -f "$EXTENDED_ROOT/out_adevtool_deps/.ninja_lock"
               # Scrub any .o / .a files that were zero-filled by an unclean host crash so ld.lld never hits corrupt archive members
-              python3 -c 'import os; root="/mnt/extended/grapheneos/out_adevtool_deps/soong/.intermediates"; magics=(b"\x7fELF",b"BC\xc0\xde",b"\xde\xc0\x17\x0b"); bad=set(); [([os.remove(os.path.join(dp,fn)),bad.add(os.path.dirname(dp)),print("Removed corrupt .o:",os.path.join(dp,fn),flush=True)] if open(os.path.join(dp,fn),"rb").read(4) not in magics else None) for dp,_,fns in os.walk(root) for fn in fns if fn.endswith(".o")]; [([os.remove(os.path.join(dp,fn)),print("Removed stale .a:",os.path.join(dp,fn),flush=True)]) for bd in bad for dp,_,fns in os.walk(bd) for fn in fns if fn.endswith(".a")]'
+              python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/out_adevtool_deps"
               SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
               taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
                 -d keepdepfile -d keeprsp \
