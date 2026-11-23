@@ -364,25 +364,49 @@ jobs:
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
+          export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
+          mkdir -p "$EXTENDED_ROOT/ccache" "$EXTENDED_ROOT/vendor_cache/tmp"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
           cd "$EXTENDED_ROOT/workspace"
           bash "$GITHUB_WORKSPACE/scripts/patch-updater-url.sh" "$EXTENDED_ROOT/workspace/packages/apps/Updater/res/values/config.xml"
-          source build/envsetup.sh
-          lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
           if [ "${TARGET_DEVICE}" = "sdk_phone64_x86_64" ] || [ "${TARGET_DEVICE}" = "sdk_phone64_arm64" ]; then
-            taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2
+            BUILD_TARGETS=""
           else
             export OFFICIAL_BUILD=true
             case "${TARGET_DEVICE}" in
               oriole|raven|bluejay)
-                taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2 vendorbootimage target-files-package otatools-package
+                BUILD_TARGETS="vendorbootimage target-files-package otatools-package"
                 ;;
               *)
-                taskset -c 0 nice -n 19 ionice -c3 m -j1 -l2 vendorbootimage vendorkernelbootimage target-files-package otatools-package
+                BUILD_TARGETS="vendorbootimage vendorkernelbootimage target-files-package otatools-package"
                 ;;
             esac
           fi
+          export BUILD_TARGETS
+          if [ -f "out/combined-${TARGET_DEVICE}.ninja" ] && [ -f "out/soong/build.${TARGET_DEVICE}.ninja" ]; then
+            echo "Reusing existing persistent Ninja graph in out/combined-${TARGET_DEVICE}.ninja..."
+            rm -f out/.ninja_lock
+            python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/workspace/out"
+            SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
+            taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
+              -d keepdepfile -d keeprsp \
+              --local_jobs 1 \
+              --log_dir "$EXTENDED_ROOT/workspace/out" \
+              --config_repo_dir=out/siso_config \
+              -f "out/combined-${TARGET_DEVICE}.ninja" \
+              ${BUILD_TARGETS}
+          else
+            taskset -c 0 nice -n 19 ionice -c3 bash -c '
+              set -euo pipefail
+              export ANDROID_QUIET_BUILD=true
+              source build/envsetup.sh
+              lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
+              m -j1 ${BUILD_TARGETS}
+            '
+          fi
+          sync
+          { date -u +%FT%TZ; ls -lh "out/target/product/${TARGET_DEVICE}/" || true; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/build-${TARGET_DEVICE}.txt"
 
       - name: Stage 6 - Memory-Safe Release Signing (/dev/shm tmpfs)
         if: inputs.stage == 'release-sign' || inputs.stage == 'all'
