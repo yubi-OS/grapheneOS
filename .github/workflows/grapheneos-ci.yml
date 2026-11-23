@@ -242,12 +242,20 @@ jobs:
           sudo ln -sfn /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
           if [ -d "$BT_DIR/linux-arm64/bin" ]; then
-            # Restore clean glibc x86_64 binaries/libs (including dynamically-linked py3-launcher64 and py3-launcher-autorun64 so Python ctypes/dlopen works inside sbox)
             git -C "$BT_DIR" checkout -f HEAD -- linux-x86 path/linux-x86
             sudo cp -af "$BT_DIR/linux-x86/lib64/"*.so* /usr/lib/x86_64-linux-gnu/
-            # Overlay only statically-linked native ARM64 ninja (does not use dlopen or relinterp)
-            cp -af "$BT_DIR/linux-arm64/bin/ninja" "$BT_DIR/linux-x86/bin/ninja"
-            for out_cand in "$EXTENDED_ROOT/out_adevtool_deps" "/dev/shm/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
+            # 1. Overlay native linux-arm64 build-tools (nsjail, ckati, rkati, ninja, toybox, acp, ziptime, etc.) + musl lib64 for in-place tools
+            cp -af "$BT_DIR/linux-arm64/bin/"* "$BT_DIR/linux-x86/bin/"
+            cp -af "$BT_DIR/linux-arm64/lib64/"* "$BT_DIR/linux-x86/lib64/"
+            # 2. Use host native ARM64 glibc binaries for sbox-copied prebuilt_build_tool modules (bison, flex, m4, make, openssl) so they never look for musl relinterp inside sbox
+            for host_tool in bison flex m4 make openssl; do
+              if [ -x "/usr/bin/$host_tool" ]; then
+                cp -af "/usr/bin/$host_tool" "$BT_DIR/linux-x86/bin/$host_tool"
+              fi
+            done
+            # 3. Restore HEAD glibc x86_64 Python launchers (py3-launcher64, py3-launcher-autorun64, py3-cmd) so Python ctypes/dlopen and x86_64 libsqlite.so work in .intermediates and sbox
+            git -C "$BT_DIR" checkout -f HEAD -- linux-x86/bin/py3-launcher64 linux-x86/bin/py3-launcher-autorun64 linux-x86/bin/py3-cmd
+            for out_cand in "$EXTENDED_ROOT/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
               if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64" ]; then
                 cp -af "$BT_DIR/linux-x86/bin/py3-launcher64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64/py3-launcher"
               fi
@@ -260,6 +268,7 @@ jobs:
             chmod 0755 "$BT_DIR/path/linux-x86/uname"
             "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
             env -i "$BT_DIR/linux-x86/bin/bison" --version | head -n 1
+            "$BT_DIR/linux-x86/bin/ckati" --version 2>&1 | head -n 1 || true
           fi
           SISO_DIR="$EXTENDED_ROOT/workspace/prebuilts/siso"
           if [ -f "$SISO_DIR/linux-arm64/siso" ]; then
