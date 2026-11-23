@@ -303,7 +303,9 @@ jobs:
           export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
           trap 'rm -f /dev/shm/one-cpu.cjs' EXIT
           cd "$EXTENDED_ROOT/workspace"
-          mkdir -p vendor/adevtool/dl
+          if [ -L vendor/adevtool/dl/unpacked ]; then rm -f vendor/adevtool/dl/unpacked; fi
+          if [ -L vendor/google_devices ]; then rm -f vendor/google_devices; fi
+          mkdir -p vendor/adevtool/dl vendor/adevtool/dl/unpacked vendor/google_devices
           for dir_cand in "vendor/adevtool/dl" "$EXTENDED_ROOT/vendor_cache"; do
             STALLION_TMP="$dir_cand/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip.tmp"
             STALLION_ZIP="vendor/adevtool/dl/stallion-cp4a.261105.040.a1-factory-45cdadb1.zip"

@@ -2,7 +2,7 @@
 import os
 import sys
 
-VALID_OBJ_MAGICS = (b"\x7fELF", b"BC\xc0\xde", b"\xde\xc0\x17\x0b")
+VALID_OBJ_MAGICS = (b"\x7fELF", b"BC\xc0\xde", b"\xde\xc0\x17\x0b", b"go o")
 
 def is_valid_ar(path: str) -> bool:
     try:
@@ -36,7 +36,7 @@ def is_valid_ar(path: str) -> bool:
                 obj_start += ext_len
             except ValueError:
                 return False
-        if name not in (b"/", b"//", b"/SYM64/", b"__.SYMDEF", b"__.SYMDEF SORTED"):
+        if name not in (b"/", b"//", b"/SYM64/", b"__.SYMDEF", b"__.SYMDEF SORTED", b"__.PKGDEF"):
             if obj_start + 4 > payload_end:
                 return False
             magic = data[obj_start:obj_start+4]
