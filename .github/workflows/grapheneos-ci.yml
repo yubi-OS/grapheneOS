@@ -363,6 +363,8 @@ jobs:
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
           export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          # Cap kernel dirty-page writeback at 16 MiB background / 64 MiB max (instead of 10%/20% of 62 GiB RAM = 6.2/12.4 GiB) so writing ~9 GiB build.stallion.ninja never triggers a multi-GiB mmcblk0 writeback storm
+          sudo sysctl -w vm.dirty_background_bytes=16777216 vm.dirty_bytes=67108864
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
           mkdir -p "$EXTENDED_ROOT/ccache" "$EXTENDED_ROOT/vendor_cache/tmp"
@@ -397,6 +399,9 @@ jobs:
               -f "out/combined-${TARGET_DEVICE}.ninja" \
               ${BUILD_TARGETS}
           else
+            # If out/combined-*.ninja was not yet produced, clean any half-written bootstrap state from a prior interrupted soong_build
+            rm -rf out
+            mkdir -p out
             taskset -c 0 nice -n 19 ionice -c3 bash -c '
               set -euo pipefail
               export ANDROID_QUIET_BUILD=true
