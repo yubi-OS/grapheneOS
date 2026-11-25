@@ -9,10 +9,12 @@ if [ ! -f "$CONFIG_XML" ]; then
   exit 1
 fi
 
-sed -i -E "s|<string name=\"url\" translatable=\"false\">[^<]+</string>|<string name=\"url\" translatable=\"false\">${OTA_URL}</string>|g" "$CONFIG_XML"
+if ! grep -q "<string name=\"url\" translatable=\"false\">${OTA_URL}</string>" "$CONFIG_XML"; then
+  sed -i -E "s|<string name=\"url\" translatable=\"false\">[^<]+</string>|<string name=\"url\" translatable=\"false\">${OTA_URL}</string>|g" "$CONFIG_XML"
+fi
 
 if grep -q "<string name=\"url\" translatable=\"false\">${OTA_URL}</string>" "$CONFIG_XML"; then
-  echo "OK: Overrode Updater URL in $CONFIG_XML -> ${OTA_URL}"
+  echo "OK: Updater URL verified in $CONFIG_XML -> ${OTA_URL}"
 else
   echo "ERROR: Failed to override Updater URL in $CONFIG_XML" >&2
   exit 1

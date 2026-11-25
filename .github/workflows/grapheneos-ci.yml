@@ -235,13 +235,18 @@ jobs:
             ln -sfn ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$QEMU_SYSROOT/lib64/ld-linux-x86-64.so.2"
             touch "$QEMU_SYSROOT/.bookworm-2.36-ready"
           fi
-          # Install x86_64 glibc 2.36 dynamic linker and runtime libs into /lib64 and /lib/x86_64-linux-gnu so siso/soong/sbox scrubbed environments resolve /lib64/ld-linux-x86-64.so.2 and libc++.so
-          sudo mkdir -p /lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
-          sudo cp -af "$QEMU_SYSROOT/lib/x86_64-linux-gnu/"* /lib/x86_64-linux-gnu/
-          sudo cp -af "$QEMU_SYSROOT/usr/lib/x86_64-linux-gnu/"* /usr/lib/x86_64-linux-gnu/
-          sudo ln -sfn /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+          # Install x86_64 glibc 2.36 dynamic linker and runtime libs into /lib64 and /lib/x86_64-linux-gnu once (avoid redundant mmcblk0 writes on resume)
           BT_DIR="$EXTENDED_ROOT/workspace/prebuilts/build-tools"
-          if [ -d "$BT_DIR/linux-arm64/bin" ]; then
+          if [ ! -e /lib64/ld-linux-x86-64.so.2 ] || [ ! -e /usr/lib/x86_64-linux-gnu/libc++.so ]; then
+            sudo mkdir -p /lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu
+            sudo cp -af "$QEMU_SYSROOT/lib/x86_64-linux-gnu/"* /lib/x86_64-linux-gnu/
+            sudo cp -af "$QEMU_SYSROOT/usr/lib/x86_64-linux-gnu/"* /usr/lib/x86_64-linux-gnu/
+            sudo ln -sfn /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+            if [ -d "$BT_DIR/linux-x86/lib64" ]; then
+              sudo cp -af "$BT_DIR/linux-x86/lib64/"*.so* /usr/lib/x86_64-linux-gnu/
+            fi
+          fi
+          if [ -d "$BT_DIR/linux-arm64/bin" ] && [ ! -f "$BT_DIR/.arm64-overlay-v2-ready" ]; then
             git -C "$BT_DIR" checkout -f HEAD -- linux-x86 path/linux-x86
             sudo cp -af "$BT_DIR/linux-x86/lib64/"*.so* /usr/lib/x86_64-linux-gnu/
             # 1. Overlay native linux-arm64 build-tools (nsjail, ckati, rkati, ninja, toybox, acp, ziptime, etc.) + musl lib64 for in-place tools
@@ -255,23 +260,15 @@ jobs:
             done
             # 3. Restore HEAD glibc x86_64 Python launchers (py3-launcher64, py3-launcher-autorun64, py3-cmd) so Python ctypes/dlopen and x86_64 libsqlite.so work in .intermediates and sbox
             git -C "$BT_DIR" checkout -f HEAD -- linux-x86/bin/py3-launcher64 linux-x86/bin/py3-launcher-autorun64 linux-x86/bin/py3-cmd
-            for out_cand in "$EXTENDED_ROOT/out_adevtool_deps" "$EXTENDED_ROOT/workspace/out"; do
-              if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64" ]; then
-                cp -af "$BT_DIR/linux-x86/bin/py3-launcher64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher/linux_glibc_x86_64/py3-launcher"
-              fi
-              if [ -d "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64" ]; then
-                cp -af "$BT_DIR/linux-x86/bin/py3-launcher-autorun64" "$out_cand/soong/.intermediates/prebuilts/build-tools/prebuilt_py3-launcher-autorun/linux_glibc_x86_64/py3-launcher-autorun"
-              fi
-            done
             rm -f "$BT_DIR/path/linux-x86/uname"
             cp -f "$EXTENDED_ROOT/x86_64-shim/uname" "$BT_DIR/path/linux-x86/uname"
             chmod 0755 "$BT_DIR/path/linux-x86/uname"
-            "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
-            env -i "$BT_DIR/linux-x86/bin/bison" --version | head -n 1
-            "$BT_DIR/linux-x86/bin/ckati" --version 2>&1 | head -n 1 || true
+            touch "$BT_DIR/.arm64-overlay-v2-ready"
           fi
+          "$BT_DIR/path/linux-x86/uname" -sm | grep -q "Linux x86_64"
+          env -i "$BT_DIR/linux-x86/bin/bison" --version | head -n 1
           SISO_DIR="$EXTENDED_ROOT/workspace/prebuilts/siso"
-          if [ -f "$SISO_DIR/linux-arm64/siso" ]; then
+          if [ -f "$SISO_DIR/linux-arm64/siso" ] && ! cmp -s "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"; then
             cp -af "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"
           fi
           JDK_DIR="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86/bin"
@@ -371,9 +368,19 @@ jobs:
         run: |
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
-          # Cap kernel dirty-page writeback at 16 MiB background / 64 MiB max (instead of 10%/20% of 62 GiB RAM = 6.2/12.4 GiB) so writing ~9 GiB build.stallion.ninja never triggers a multi-GiB mmcblk0 writeback storm
+          export JAVA_HOME="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86"
+          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/workspace/out/.path:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          # Cap kernel dirty-page writeback at 16 MiB background / 64 MiB max and enforce cgroup v2 io.max on mmcblk0 so siso cold-cache stat/hash bursts cannot wedge sdhci_msm
           sudo sysctl -w vm.dirty_background_bytes=16777216 vm.dirty_bytes=67108864
+          if [ -r /sys/block/mmcblk0/dev ] && [ -d /sys/fs/cgroup ]; then
+            MMC_MAJ_MIN=$(cat /sys/block/mmcblk0/dev)
+            echo "+io" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
+            sudo mkdir -p /sys/fs/cgroup/grapheneos_build
+            echo "${MMC_MAJ_MIN} rbps=20971520 wbps=15728640 riops=350 wiops=250" | sudo tee /sys/fs/cgroup/grapheneos_build/io.max >/dev/null 2>&1 || true
+            echo $ | sudo tee /sys/fs/cgroup/grapheneos_build/cgroup.procs >/dev/null 2>&1 || true
+            echo "Configured cgroup v2 io.max on mmcblk0 (${MMC_MAJ_MIN}):"
+            cat /sys/fs/cgroup/grapheneos_build/io.max 2>/dev/null || true
+          fi
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
           export JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=1 -XX:ParallelGCThreads=1 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
