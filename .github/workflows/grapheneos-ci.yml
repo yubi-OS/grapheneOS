@@ -377,7 +377,7 @@ jobs:
             echo "+io" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
             sudo mkdir -p /sys/fs/cgroup/grapheneos_build
             echo "${MMC_MAJ_MIN} rbps=20971520 wbps=15728640 riops=350 wiops=250" | sudo tee /sys/fs/cgroup/grapheneos_build/io.max >/dev/null 2>&1 || true
-            echo $ | sudo tee /sys/fs/cgroup/grapheneos_build/cgroup.procs >/dev/null 2>&1 || true
+            echo $$ | sudo tee /sys/fs/cgroup/grapheneos_build/cgroup.procs >/dev/null 2>&1 || true
             echo "Configured cgroup v2 io.max on mmcblk0 (${MMC_MAJ_MIN}):"
             cat /sys/fs/cgroup/grapheneos_build/io.max 2>/dev/null || true
           fi
