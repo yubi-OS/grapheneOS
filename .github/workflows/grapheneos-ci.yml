@@ -367,6 +367,7 @@ jobs:
           sudo sysctl -w vm.dirty_background_bytes=16777216 vm.dirty_bytes=67108864
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
+          export JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=1 -XX:ParallelGCThreads=1 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
           mkdir -p "$EXTENDED_ROOT/ccache" "$EXTENDED_ROOT/vendor_cache/tmp"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
