@@ -291,7 +291,7 @@ jobs:
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
           export JAVA_HOME="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86"
-          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/workspace/out/.path:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          export PATH="$EXTENDED_ROOT/x86_64-shim:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           cat > /dev/shm/one-cpu.cjs <<'EOF'
           const os = require('os');
@@ -369,7 +369,7 @@ jobs:
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
           export JAVA_HOME="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86"
-          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/workspace/out/.path:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          export PATH="$EXTENDED_ROOT/x86_64-shim:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           # Cap kernel dirty-page writeback at 16 MiB background / 64 MiB max and enforce cgroup v2 io.max on mmcblk0 so siso cold-cache stat/hash bursts cannot wedge sdhci_msm
           sudo sysctl -w vm.dirty_background_bytes=16777216 vm.dirty_bytes=67108864
           if [ -r /sys/block/mmcblk0/dev ] && [ -d /sys/fs/cgroup ]; then
