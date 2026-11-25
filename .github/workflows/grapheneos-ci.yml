@@ -274,6 +274,14 @@ jobs:
           if [ -f "$SISO_DIR/linux-arm64/siso" ]; then
             cp -af "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"
           fi
+          JDK_DIR="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86/bin"
+          if [ -d "$JDK_DIR" ]; then
+            for jdk_bin in java javac jar javap javadoc jdeps jlink jmod; do
+              if [ -x "$JDK_DIR/$jdk_bin" ]; then
+                sudo ln -sfn "$JDK_DIR/$jdk_bin" "/usr/local/bin/$jdk_bin"
+              fi
+            done
+          fi
           export QEMU_LD_PREFIX="$QEMU_SYSROOT"
           "$EXTENDED_ROOT/workspace/prebuilts/build-tools/path/linux-x86/sha256sum" --version | tee "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
           "$EXTENDED_ROOT/workspace/prebuilts/go/linux-x86/bin/go" version | tee -a "$GITHUB_WORKSPACE/evidence/qemu-x86_64-sysroot-test.txt"
@@ -285,7 +293,8 @@ jobs:
         run: |
           set -euo pipefail
           export QEMU_LD_PREFIX="$EXTENDED_ROOT/x86_64-sysroot"
-          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
+          export JAVA_HOME="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86"
+          export PATH="$EXTENDED_ROOT/x86_64-shim:$EXTENDED_ROOT/workspace/out/.path:$JAVA_HOME/bin:$EXTENDED_ROOT/bin/node-v24.22.3/bin:$EXTENDED_ROOT/bin:$PATH:/sbin:/usr/sbin:/usr/local/sbin"
           export YARN_CACHE_FOLDER="$EXTENDED_ROOT/vendor_cache/yarn"
           cat > /dev/shm/one-cpu.cjs <<'EOF'
           const os = require('os');
@@ -389,8 +398,8 @@ jobs:
           export BUILD_TARGETS
           if [ -f "out/combined-${TARGET_DEVICE}.ninja" ] && [ -f "out/soong/build.${TARGET_DEVICE}.ninja" ]; then
             echo "Reusing existing persistent Ninja graph in out/combined-${TARGET_DEVICE}.ninja..."
-            rm -f out/.ninja_lock
-            python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/workspace/out"
+            rm -f out/.lock out/.ninja_lock out/.siso_lock out/.siso_port
+            taskset -c 0 nice -n 19 ionice -c3 python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/workspace/out"
             SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
             taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
               -d keepdepfile -d keeprsp \
