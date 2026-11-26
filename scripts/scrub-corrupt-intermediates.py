@@ -143,11 +143,20 @@ def main() -> int:
     ninja_log = os.path.join(out_dir, ".ninja_log")
     if os.path.isfile(ninja_log):
         try:
-            with open(ninja_log, "rb") as f:
+            with open(ninja_log, "rb+") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
-                f.seek(max(0, size - 262144), os.SEEK_SET)
-                lines = f.read().decode("utf-8", errors="replace").splitlines()[-300:]
+                tail_start = max(0, size - 262144)
+                f.seek(tail_start, os.SEEK_SET)
+                raw_tail = f.read()
+                if b"\x00" in raw_tail:
+                    clean_lines = [ln for ln in raw_tail.splitlines(keepends=True) if b"\x00" not in ln and ln.endswith(b"\n")]
+                    f.seek(tail_start, os.SEEK_SET)
+                    f.write(b"".join(clean_lines))
+                    f.truncate()
+                    print(f"Stripped crash-truncated NUL tail from {ninja_log}", flush=True)
+                    raw_tail = b"".join(clean_lines)
+                lines = raw_tail.decode("utf-8", errors="replace").splitlines()[-300:]
         except OSError:
             lines = []
         seen = set()
