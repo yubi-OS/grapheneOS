@@ -362,7 +362,7 @@ jobs:
           sync
           { date -u +%FT%TZ; ls -la "vendor/google_devices/${TARGET_DEVICE}"; du -sh "vendor/google_devices/${TARGET_DEVICE}"; df -h /mnt/extended; } | tee "$GITHUB_WORKSPACE/evidence/adevtool-${TARGET_DEVICE}.txt"
 
-      - name: Stage 5 - Throttled OS Build on /mnt/extended
+      - name: Stage 5 - Throttled OS Build on /mnt/extended (4 Cores, cgroup v2 io.max Protected)
         if: inputs.stage == 'build' || inputs.stage == 'all'
         shell: bash
         run: |
@@ -376,14 +376,14 @@ jobs:
             MMC_MAJ_MIN=$(cat /sys/block/mmcblk0/dev)
             echo "+io" | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
             sudo mkdir -p /sys/fs/cgroup/grapheneos_build
-            echo "${MMC_MAJ_MIN} rbps=20971520 wbps=15728640 riops=350 wiops=250" | sudo tee /sys/fs/cgroup/grapheneos_build/io.max >/dev/null 2>&1 || true
+            echo "${MMC_MAJ_MIN} rbps=25165824 wbps=16777216 riops=400 wiops=300" | sudo tee /sys/fs/cgroup/grapheneos_build/io.max >/dev/null 2>&1 || true
             echo $$ | sudo tee /sys/fs/cgroup/grapheneos_build/cgroup.procs >/dev/null 2>&1 || true
             echo "Configured cgroup v2 io.max on mmcblk0 (${MMC_MAJ_MIN}):"
             cat /sys/fs/cgroup/grapheneos_build/io.max 2>/dev/null || true
           fi
           export CCACHE_DIR="$EXTENDED_ROOT/ccache"
           export TMPDIR="$EXTENDED_ROOT/vendor_cache/tmp"
-          export JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=1 -XX:ParallelGCThreads=1 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
+          export JAVA_TOOL_OPTIONS="-XX:ActiveProcessorCount=2 -XX:ParallelGCThreads=2 -XX:ConcGCThreads=1 -XX:CICompilerCount=2"
           mkdir -p "$EXTENDED_ROOT/ccache" "$EXTENDED_ROOT/vendor_cache/tmp"
           export BUILD_NUMBER="${MANIFEST_TAG}"
           export BUILD_DATETIME="1795038729"
@@ -404,13 +404,13 @@ jobs:
           fi
           export BUILD_TARGETS
           if [ -f "out/combined-${TARGET_DEVICE}.ninja" ] && [ -f "out/soong/build.${TARGET_DEVICE}.ninja" ]; then
-            echo "Reusing existing persistent Ninja graph in out/combined-${TARGET_DEVICE}.ninja..."
+            echo "Reusing existing persistent Ninja graph in out/combined-${TARGET_DEVICE}.ninja (4 cores: 0-3, --local_jobs 4)..."
             rm -f out/.lock out/.ninja_lock out/.siso_lock out/.siso_port
-            taskset -c 0 nice -n 19 ionice -c3 python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/workspace/out"
+            taskset -c 0-3 nice -n 19 ionice -c3 python3 "$GITHUB_WORKSPACE/scripts/scrub-corrupt-intermediates.py" "$EXTENDED_ROOT/workspace/out"
             SISO_EXPERIMENTS="allow-unexpected-rsp-remove,ignore-missing-out-in-depfile,oom-score-adj" \
-            taskset -c 0 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
+            taskset -c 0-3 nice -n 19 ionice -c3 prebuilts/siso/linux-x86/siso ninja \
               -d keepdepfile -d keeprsp \
-              --local_jobs 1 \
+              --local_jobs 4 \
               --log_dir "$EXTENDED_ROOT/workspace/out" \
               --config_repo_dir=out/siso_config \
               -f "out/combined-${TARGET_DEVICE}.ninja" \
@@ -419,12 +419,12 @@ jobs:
             # If out/combined-*.ninja was not yet produced, clean any half-written bootstrap state from a prior interrupted soong_build
             rm -rf out
             mkdir -p out
-            taskset -c 0 nice -n 19 ionice -c3 bash -c '
+            taskset -c 0-3 nice -n 19 ionice -c3 bash -c '
               set -euo pipefail
               export ANDROID_QUIET_BUILD=true
               source build/envsetup.sh
               lunch "${TARGET_DEVICE}-cur-${BUILD_VARIANT}"
-              m -j1 ${BUILD_TARGETS}
+              m -j4 ${BUILD_TARGETS}
             '
           fi
           sync
