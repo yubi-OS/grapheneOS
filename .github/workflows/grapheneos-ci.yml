@@ -271,6 +271,10 @@ jobs:
           if [ -f "$SISO_DIR/linux-arm64/siso" ] && ! cmp -s "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"; then
             cp -af "$SISO_DIR/linux-arm64/siso" "$SISO_DIR/linux-x86/siso"
           fi
+          if [ ! -e /usr/bin/python ] && [ -x /usr/bin/python3 ]; then
+            sudo ln -sfn /usr/bin/python3 /usr/bin/python
+            sudo ln -sfn /usr/bin/python3 /usr/local/bin/python
+          fi
           JDK_DIR="$EXTENDED_ROOT/workspace/prebuilts/jdk/jdk21/linux-x86/bin"
           if [ -d "$JDK_DIR" ]; then
             for jdk_bin in java javac jar javap javadoc jdeps jlink jmod; do
